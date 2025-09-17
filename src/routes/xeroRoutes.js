@@ -64,6 +64,12 @@ router.delete('/settings', xeroLimiter, auth, xeroController.deleteXeroSettings)
 router.get('/settings/all', xeroLimiter, auth, xeroController.getAllXeroSettings);
 router.post('/settings/update-redirect-uris', xeroLimiter, auth, xeroController.updateAllRedirectUris);
 
+// Super Admin - Company Management for Xero
+router.get('/admin/companies', xeroLimiter, auth, xeroController.getCompaniesForXeroManagement);
+
+// Admin - Credential Status Check
+router.get('/admin/check-credentials', auth, xeroController.checkAdminCredentials);
+
 // Xero-specific state creation for OAuth
 router.post('/create-auth-state', auth, xeroController.createXeroAuthState);
 router.get('/auth-state/:state', auth, xeroController.getXeroAuthState);

@@ -51,15 +51,36 @@ const buildAuthUrl = async (req, res) => {
   try {
     console.log('🔍 Building Xero Auth URL for company:', req.company.id);
 
-    if (req.company.role === 'admin') {
+    // Check if user is Super Admin (they cannot use Xero directly)
+    if (req.company.role === 'superadmin') {
       console.log('❌ Super admin cannot setup Xero accounts');
       return res.status(403).json({
         success: false,
         message: 'Super admins cannot setup Xero accounts. Only regular companies can setup Xero integration.',
         errorCode: 'SUPER_ADMIN_RESTRICTED',
         action: 'use_regular_company',
-        details: { currentRole: req.company.role, allowedRoles: ['company'] }
+        details: { currentRole: req.company.role, allowedRoles: ['company', 'admin'] }
       });
+    }
+
+    // Check if Admin user has credentials configured
+    if (req.company.role === 'admin') {
+      const adminXeroSettings = await XeroSettings.getByCompanyId(companyId);
+      if (!adminXeroSettings) {
+        console.log('❌ Admin user missing Xero credentials');
+        return res.status(400).json({
+          success: false,
+          message: 'Your account does not have the required Client ID or Client Secret configured for login. Please contact your Super Admin to have the credentials added to your account. Meanwhile, you can proceed by directly connecting to Xero for login.',
+          errorCode: 'ADMIN_CREDENTIALS_MISSING',
+          action: 'contact_super_admin_or_direct_connect',
+          details: {
+            userRole: 'admin',
+            requiredAction: 'Contact Super Admin or use direct Xero connection',
+            contactMessage: 'Please ask your Super Admin to configure Xero credentials for your account',
+            alternativeAction: 'You can still connect directly to Xero using the Connect button'
+          }
+        });
+      }
     }
 
     const companyId = req.company.id;
@@ -623,18 +644,39 @@ const getCompanyInfo = async (req, res) => {
 };
 
 /**
- * Create or update Xero settings for a company
+ * Create or update Xero settings for a company (Super Admin only)
  */
 const createXeroSettings = async (req, res) => {
   try {
     console.log('🔍 DEBUG: createXeroSettings called');
     console.log('🔍 DEBUG: req.body:', req.body);
+    console.log('🔍 DEBUG: User role:', req.company.role);
 
-    const companyId = req.company.id;
-    const { clientId, clientSecret, redirectUri } = req.body;
+    // Only Super Admin can create/update Xero settings
+    if (req.company.role !== 'superadmin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Only Super Admins can configure Xero settings.',
+        errorCode: 'SUPER_ADMIN_REQUIRED',
+        userRole: req.company.role
+      });
+    }
+
+    const { companyId, clientId, clientSecret, redirectUri } = req.body;
+
+    // Validate required fields
+    if (!companyId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Company ID is required to assign Xero settings' 
+      });
+    }
 
     if (!clientId || !clientSecret) {
-      return res.status(400).json({ success: false, message: 'Client ID and Client Secret are required' });
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Client ID and Client Secret are required' 
+      });
     }
 
     // Use environment-based redirect URI to ensure no localhost in production
@@ -791,12 +833,12 @@ const deleteXeroSettings = async (req, res) => {
 };
 
 /**
- * Admin – get all Xero settings
+ * Super Admin – get all Xero settings
  */
 const getAllXeroSettings = async (req, res) => {
   try {
-    if (req.company.role !== 'admin') {
-      return res.status(403).json({ success: false, message: 'Access denied. Admin privileges required.' });
+    if (req.company.role !== 'superadmin') {
+      return res.status(403).json({ success: false, message: 'Access denied. Super Admin privileges required.' });
     }
     const settings = await XeroSettings.getAllSettings();
     const { getFrontendRedirectUrl } = require('../config/environment');
@@ -821,6 +863,103 @@ const getAllXeroSettings = async (req, res) => {
   } catch (error) {
     console.error('Get All Xero Settings Error:', error);
     res.status(500).json({ success: false, message: 'Failed to get all Xero settings', error: error.message });
+  }
+};
+
+/**
+ * Super Admin – get all companies for Xero credential management
+ */
+const getCompaniesForXeroManagement = async (req, res) => {
+  try {
+    if (req.company.role !== 'superadmin') {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Access denied. Super Admin privileges required.' 
+      });
+    }
+
+    const Company = require('../models/Company');
+    const companies = await Company.getAllCompanies();
+    
+    // Get Xero settings for each company
+    const companiesWithXeroStatus = await Promise.all(
+      companies.map(async (company) => {
+        const xeroSettings = await XeroSettings.getByCompanyId(company.id);
+        return {
+          id: company.id,
+          name: company.name,
+          email: company.email,
+          role: company.role,
+          hasXeroCredentials: !!xeroSettings,
+          xeroConfigured: !!(xeroSettings?.client_id && xeroSettings?.client_secret),
+          lastUpdated: xeroSettings?.updated_at || null,
+          createdAt: company.created_at
+        };
+      })
+    );
+
+    res.json({
+      success: true,
+      message: 'Companies retrieved successfully',
+      data: companiesWithXeroStatus.filter(c => c.role !== 'superadmin') // Exclude other super admins
+    });
+  } catch (error) {
+    console.error('Get Companies for Xero Management Error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to retrieve companies', 
+      error: error.message 
+    });
+  }
+};
+
+/**
+ * Check Admin credential status (for login validation)
+ */
+const checkAdminCredentials = async (req, res) => {
+  try {
+    const companyId = req.company.id;
+    const userRole = req.company.role;
+
+    // Only for Admin users
+    if (userRole !== 'admin') {
+      return res.status(400).json({
+        success: false,
+        message: 'This endpoint is only for Admin users',
+        userRole
+      });
+    }
+
+    const xeroSettings = await XeroSettings.getByCompanyId(companyId);
+    const hasCredentials = !!(xeroSettings?.client_id && xeroSettings?.client_secret);
+
+    res.json({
+      success: true,
+      data: {
+        hasCredentials,
+        userRole: 'admin',
+        companyId,
+        message: hasCredentials 
+          ? 'Xero credentials are configured for your account'
+          : 'Your account does not have the required Client ID or Client Secret configured for login. Please contact your Super Admin to have the credentials added to your account. Meanwhile, you can proceed by directly connecting to Xero for login.',
+        action: hasCredentials 
+          ? 'can_proceed_with_xero' 
+          : 'contact_super_admin_or_direct_connect',
+        contactMessage: hasCredentials 
+          ? null 
+          : 'Please ask your Super Admin to configure Xero credentials for your account',
+        alternativeAction: hasCredentials 
+          ? null 
+          : 'You can still connect directly to Xero using the Connect button'
+      }
+    });
+  } catch (error) {
+    console.error('Check Admin Credentials Error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to check credentials', 
+      error: error.message 
+    });
   }
 };
 
@@ -1933,6 +2072,8 @@ module.exports = {
   getXeroSettings,
   deleteXeroSettings,
   getAllXeroSettings,
+  getCompaniesForXeroManagement,
+  checkAdminCredentials,
   updateAllRedirectUris,
   createXeroAuthState,
   getXeroAuthState,
