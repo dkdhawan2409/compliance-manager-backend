@@ -108,13 +108,40 @@ class MissingAttachmentService {
         isPotentiallyExpired: refreshTokenAgeDays && refreshTokenAgeDays > 55
       });
       
-      // Only block if token is definitely expired (more than 65 days to be safe)
-      // This gives some buffer beyond Xero's 60-day limit
-      if (refreshTokenAgeDays && refreshTokenAgeDays > 65) {
-        console.error(`❌ Refresh token for company ${companyId} is ${refreshTokenAgeDays} days old - definitely expired`);
-        throw new Error(`Xero refresh token has expired (created ${refreshTokenAgeDays} days ago). Please reconnect to Xero Flow to get new tokens.`);
-      } else if (refreshTokenAgeDays && refreshTokenAgeDays > 55) {
-        console.warn(`⚠️ Refresh token for company ${companyId} is ${refreshTokenAgeDays} days old and may expire soon. Will attempt refresh if needed.`);
+      // More aggressive approach: Try to refresh if token is older than 50 days
+      // This gives us more time to get fresh tokens before they expire
+      if (refreshTokenAgeDays && refreshTokenAgeDays > 50) {
+        console.warn(`⚠️ Refresh token for company ${companyId} is ${refreshTokenAgeDays} days old. Attempting proactive refresh...`);
+        
+        // Try to refresh the token proactively
+        try {
+          await this.refreshXeroToken(companyId, xeroSettings);
+          console.log(`✅ Proactive token refresh successful for company ${companyId}`);
+          
+          // Reload settings after refresh
+          const refreshedResult = await db.query(
+            'SELECT access_token, refresh_token, token_expires_at, tenant_id FROM xero_settings WHERE company_id = $1',
+            [companyId]
+          );
+          if (refreshedResult.rows.length > 0 && refreshedResult.rows[0].access_token) {
+            xeroSettings.access_token = refreshedResult.rows[0].access_token;
+            xeroSettings.refresh_token = refreshedResult.rows[0].refresh_token;
+            xeroSettings.token_expires_at = refreshedResult.rows[0].token_expires_at;
+            xeroSettings.tenant_id = refreshedResult.rows[0].tenant_id;
+            console.log(`✅ Proactive refresh completed for company ${companyId}`);
+          }
+        } catch (refreshError) {
+          console.error(`❌ Proactive refresh failed for company ${companyId}:`, refreshError.message);
+          
+          // If proactive refresh fails, check if token is definitely expired
+          if (refreshTokenAgeDays && refreshTokenAgeDays > 65) {
+            console.error(`❌ Refresh token for company ${companyId} is ${refreshTokenAgeDays} days old - definitely expired`);
+            throw new Error(`Xero refresh token has expired (created ${refreshTokenAgeDays} days ago). Please reconnect to Xero Flow to get new tokens.`);
+          }
+          
+          // If not definitely expired, continue with existing token
+          console.warn(`⚠️ Continuing with existing token for company ${companyId} despite refresh failure`);
+        }
       }
 
       // SECURITY: Always use the company's own tenant ID from their settings
@@ -1469,6 +1496,81 @@ Reply STOP to opt out.`;
     } catch (error) {
       console.error('❌ Error getting duplicate stats:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Check token expiry status and provide warnings
+   * @param {string} companyId - Company ID
+   * @returns {Promise<Object>} Token status information
+   */
+  async checkTokenExpiryStatus(companyId) {
+    try {
+      console.log(`🔍 Checking token expiry status for company ${companyId}`);
+      
+      const result = await db.query(
+        'SELECT created_at, updated_at, token_expires_at FROM xero_settings WHERE company_id = $1',
+        [companyId]
+      );
+      
+      if (result.rows.length === 0) {
+        return {
+          status: 'no_tokens',
+          message: 'No Xero tokens found',
+          daysUntilExpiry: null,
+          needsReconnection: true
+        };
+      }
+      
+      const settings = result.rows[0];
+      const tokenCreatedAt = settings.created_at || settings.updated_at;
+      const refreshTokenAge = tokenCreatedAt ? new Date() - new Date(tokenCreatedAt) : null;
+      const refreshTokenAgeDays = refreshTokenAge ? Math.floor(refreshTokenAge / (1000 * 60 * 60 * 24)) : null;
+      
+      // Check access token expiry
+      const accessTokenExpiresAt = settings.token_expires_at;
+      const accessTokenExpired = accessTokenExpiresAt && new Date(accessTokenExpiresAt) <= new Date();
+      
+      let status = 'healthy';
+      let message = 'Tokens are healthy';
+      let needsReconnection = false;
+      
+      if (refreshTokenAgeDays && refreshTokenAgeDays > 65) {
+        status = 'expired';
+        message = `Refresh token expired ${refreshTokenAgeDays - 60} days ago`;
+        needsReconnection = true;
+      } else if (refreshTokenAgeDays && refreshTokenAgeDays > 55) {
+        status = 'warning';
+        message = `Refresh token expires in ${60 - refreshTokenAgeDays} days`;
+        needsReconnection = false;
+      } else if (refreshTokenAgeDays && refreshTokenAgeDays > 45) {
+        status = 'notice';
+        message = `Refresh token expires in ${60 - refreshTokenAgeDays} days`;
+        needsReconnection = false;
+      }
+      
+      if (accessTokenExpired) {
+        status = 'access_expired';
+        message = 'Access token expired (will be refreshed automatically)';
+        needsReconnection = false;
+      }
+      
+      return {
+        status,
+        message,
+        daysUntilExpiry: refreshTokenAgeDays ? 60 - refreshTokenAgeDays : null,
+        refreshTokenAgeDays,
+        accessTokenExpired,
+        needsReconnection
+      };
+    } catch (error) {
+      console.error('❌ Error checking token expiry status:', error);
+      return {
+        status: 'error',
+        message: 'Unable to check token status',
+        daysUntilExpiry: null,
+        needsReconnection: true
+      };
     }
   }
 }

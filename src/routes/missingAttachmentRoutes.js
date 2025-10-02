@@ -23,6 +23,7 @@ router.get('/upload-links', auth, addCompanyContext, validateCompanyDataAccess, 
 router.get('/statistics', auth, addCompanyContext, validateCompanyDataAccess, missingAttachmentController.getStatistics);
 router.delete('/cleanup', auth, addCompanyContext, validateCompanyDataAccess, missingAttachmentController.cleanupExpiredLinks);
 router.get('/duplicates', auth, addCompanyContext, validateCompanyDataAccess, missingAttachmentController.getDuplicateStats);
+router.get('/token-status', auth, addCompanyContext, validateCompanyDataAccess, missingAttachmentController.checkTokenStatus);
 
 // Public upload routes (no authentication required)
 router.get('/upload/:linkId', missingAttachmentController.getUploadPage);

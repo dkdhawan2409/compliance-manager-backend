@@ -523,6 +523,29 @@ const getDuplicateStats = async (req, res) => {
   }
 };
 
+/**
+ * Check Xero token expiry status
+ */
+const checkTokenStatus = async (req, res) => {
+  try {
+    const companyId = req.company.id;
+    
+    const tokenStatus = await missingAttachmentService.checkTokenExpiryStatus(companyId);
+    
+    res.json({
+      success: true,
+      data: tokenStatus
+    });
+  } catch (error) {
+    console.error('❌ Error checking token status:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check token status',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   getConfig,
   updateConfig,
@@ -534,5 +557,6 @@ module.exports = {
   uploadReceipt,
   getStatistics,
   cleanupExpiredLinks,
-  getDuplicateStats
+  getDuplicateStats,
+  checkTokenStatus
 };
