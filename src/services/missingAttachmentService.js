@@ -731,7 +731,7 @@ Reply STOP to opt out.`;
       // Get company's Xero settings
       const xeroSettingsQuery = `
         SELECT * FROM xero_settings 
-        WHERE company_id = $1 AND connected = true
+        WHERE company_id = $1 AND access_token IS NOT NULL AND refresh_token IS NOT NULL
         LIMIT 1
       `;
       const xeroSettingsResult = await db.query(xeroSettingsQuery, [companyId]);
@@ -1083,7 +1083,7 @@ Reply STOP to opt out.`;
       // Get Xero access token for the company
       const xeroSettingsQuery = `
         SELECT * FROM xero_settings 
-        WHERE company_id = $1 AND connected = true
+        WHERE company_id = $1 AND access_token IS NOT NULL AND refresh_token IS NOT NULL
         LIMIT 1
       `;
       const xeroSettingsResult = await db.query(xeroSettingsQuery, [uploadLink.companyId]);
