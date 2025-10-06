@@ -230,6 +230,56 @@ const detectMissingAttachments = async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Error detecting missing attachments:', error);
+    
+    // Handle specific Xero token expiry errors with appropriate status codes
+    if (error.message.includes('refresh token has expired') || 
+        error.message.includes('Refresh token has expired') ||
+        error.message.includes('invalid_grant')) {
+      return res.status(401).json({
+        success: false,
+        message: 'Xero connection has expired. Please reconnect to Xero to continue.',
+        error: 'XERO_TOKEN_EXPIRED',
+        requiresReconnection: true
+      });
+    }
+    
+    // Handle Xero configuration errors
+    if (error.message.includes('Xero settings not found') || 
+        error.message.includes('Xero not connected') ||
+        error.message.includes('Please configure Xero Flow integration')) {
+      return res.status(400).json({
+        success: false,
+        message: 'Xero integration not configured. Please connect to Xero first.',
+        error: 'XERO_NOT_CONFIGURED',
+        requiresConfiguration: true
+      });
+    }
+    
+    // Handle Xero API permission errors
+    if (error.message.includes('Insufficient permissions') || 
+        error.message.includes('unauthorized_client') ||
+        error.message.includes('invalid_client')) {
+      return res.status(403).json({
+        success: false,
+        message: 'Xero app permissions are insufficient. Please check your Xero app configuration.',
+        error: 'XERO_PERMISSIONS_ERROR',
+        requiresPermissionUpdate: true
+      });
+    }
+    
+    // Handle other Xero API errors
+    if (error.message.includes('Xero API') || 
+        error.message.includes('Xero server error') ||
+        error.message.includes('Xero tenant not found')) {
+      return res.status(502).json({
+        success: false,
+        message: 'Xero service is temporarily unavailable. Please try again later.',
+        error: 'XERO_SERVICE_ERROR',
+        isTemporary: true
+      });
+    }
+    
+    // Default to 500 for unexpected errors
     res.status(500).json({
       success: false,
       message: 'Failed to detect missing attachments',
@@ -538,6 +588,18 @@ const checkTokenStatus = async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Error checking token status:', error);
+    
+    // Handle specific Xero connection errors
+    if (error.message.includes('Xero settings not found') || 
+        error.message.includes('Xero not connected')) {
+      return res.status(400).json({
+        success: false,
+        message: 'Xero integration not configured. Please connect to Xero first.',
+        error: 'XERO_NOT_CONFIGURED',
+        requiresConfiguration: true
+      });
+    }
+    
     res.status(500).json({
       success: false,
       message: 'Failed to check token status',

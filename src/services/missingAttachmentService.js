@@ -133,6 +133,16 @@ class MissingAttachmentService {
         } catch (refreshError) {
           console.error(`❌ Proactive refresh failed for company ${companyId}:`, refreshError.message);
           
+          // Check for specific error types in proactive refresh
+          if (refreshError.message.includes('invalid_grant') || refreshError.message.includes('Refresh token has expired')) {
+            console.error(`❌ Refresh token for company ${companyId} is definitely expired`);
+            throw new Error(`Xero refresh token has expired (created ${refreshTokenAgeDays} days ago). Please reconnect to Xero Flow to get new tokens.`);
+          } else if (refreshError.message.includes('invalid_client') || refreshError.message.includes('Invalid client credentials')) {
+            throw new Error(`Invalid Xero client credentials for company ${companyId}. Please check Xero app configuration.`);
+          } else if (refreshError.message.includes('unauthorized_client')) {
+            throw new Error(`Xero app not authorized for company ${companyId}. Please check your Xero app status and permissions.`);
+          }
+          
           // If proactive refresh fails, check if token is definitely expired
           if (refreshTokenAgeDays && refreshTokenAgeDays > 65) {
             console.error(`❌ Refresh token for company ${companyId} is ${refreshTokenAgeDays} days old - definitely expired`);
@@ -182,6 +192,8 @@ class MissingAttachmentService {
           throw new Error(`Invalid Xero client credentials for company ${companyId}. Please check Xero app configuration.`);
         } else if (refreshError.message.includes('Missing client credentials')) {
           throw new Error(`Missing Xero client credentials for company ${companyId}. Please reconfigure Xero integration.`);
+        } else if (refreshError.message.includes('unauthorized_client')) {
+          throw new Error(`Xero app not authorized for company ${companyId}. Please check your Xero app status and permissions.`);
         } else {
           // If refresh fails for other reasons, log the error but continue with existing token
           console.warn(`⚠️ Token refresh failed for company ${companyId}, continuing with existing token:`, refreshError.message);
