@@ -187,6 +187,12 @@ const createTables = async () => {
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='xero_settings' AND column_name='tenant_id') THEN
           ALTER TABLE xero_settings ADD COLUMN tenant_id VARCHAR(255);
         END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='xero_settings' AND column_name='organization_name') THEN
+          ALTER TABLE xero_settings ADD COLUMN organization_name VARCHAR(255);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='xero_settings' AND column_name='tenant_data') THEN
+          ALTER TABLE xero_settings ADD COLUMN tenant_data JSONB;
+        END IF;
       END
       $$;
     `);

@@ -379,16 +379,42 @@ const handleCallback = async (req, res) => {
       }
     });
 
-    // Save tokens
+    console.log(`📊 Retrieved ${tenantsResponse.data.length} Xero tenant(s) for company ${companyId}`);
+
+    // Extract tenant information
+    const primaryTenant = tenantsResponse.data[0];
+    const tenantId = primaryTenant?.tenantId || null;
+    const tenantName = primaryTenant?.tenantName || null;
+    const tenantData = JSON.stringify(tenantsResponse.data);
+
+    console.log(`🏢 Primary tenant: ${tenantName} (${tenantId})`);
+
+    // Save tokens, tenant ID, tenant name, and tenant data
     try {
       await db.query(
         `UPDATE xero_settings 
-         SET access_token = $1, refresh_token = $2, token_expires_at = $3, updated_at = CURRENT_TIMESTAMP 
-         WHERE company_id = $4`,
-        [tokens.accessToken, tokens.refreshToken, new Date(Date.now() + tokens.expiresIn * 1000), companyId]
+         SET access_token = $1, 
+             refresh_token = $2, 
+             token_expires_at = $3, 
+             tenant_id = $4,
+             organization_name = $5,
+             tenant_data = $6,
+             updated_at = CURRENT_TIMESTAMP 
+         WHERE company_id = $7`,
+        [
+          tokens.accessToken, 
+          tokens.refreshToken, 
+          new Date(Date.now() + tokens.expiresIn * 1000), 
+          tenantId,
+          tenantName,
+          tenantData,
+          companyId
+        ]
       );
+      console.log(`✅ Successfully saved tokens and tenant info for company ${companyId}`);
     } catch (dbError) {
       console.error('⚠️ Failed to store tokens in database:', dbError.message);
+      console.error('⚠️ DB Error details:', dbError);
     }
 
     // State one-time use
