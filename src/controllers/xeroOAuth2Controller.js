@@ -491,9 +491,15 @@ const getConnectionStatus = async (req, res) => {
     // Parse tenant data
     let tenants = [];
     try {
-      tenants = JSON.parse(settings.tenant_data || '[]');
+      if (settings.tenant_data) {
+        tenants = JSON.parse(settings.tenant_data);
+        console.log('✅ Retrieved tenant data from database:', tenants.length, 'tenants');
+      } else {
+        console.warn('⚠️ No tenant data found in database');
+      }
     } catch (e) {
-      console.warn('Failed to parse tenant data');
+      console.error('❌ Failed to parse tenant data:', e);
+      tenants = [];
     }
 
     // Add cache-busting headers
@@ -501,6 +507,15 @@ const getConnectionStatus = async (req, res) => {
       'Cache-Control': 'no-cache, no-store, must-revalidate',
       'Pragma': 'no-cache',
       'Expires': '0'
+    });
+
+    console.log('📊 Connection status response:', {
+      connected: isTokenValid,
+      hasTokens,
+      isTokenValid,
+      tenantsCount: tenants.length,
+      hasCredentials,
+      tenantNames: tenants.map(t => t.tenantName || t.organisationName)
     });
 
     res.json({
