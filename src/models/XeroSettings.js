@@ -473,6 +473,47 @@ class XeroSettings {
       throw error;
     }
   }
+
+  /**
+   * Update authorized tenants for a company
+   */
+  static async updateAuthorizedTenants(companyId, tenants) {
+    try {
+      const result = await db.query(`
+        UPDATE xero_settings 
+        SET authorized_tenants = $1,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE company_id = $2
+        RETURNING *
+      `, [JSON.stringify(tenants), companyId]);
+      
+      return result.rows[0];
+    } catch (error) {
+      console.error('Error updating authorized tenants:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get authorized tenants for a company
+   */
+  static async getAuthorizedTenants(companyId) {
+    try {
+      const result = await db.query(`
+        SELECT authorized_tenants
+        FROM xero_settings 
+        WHERE company_id = $1
+      `, [companyId]);
+      
+      if (!result.rows[0]) return [];
+      
+      const tenants = result.rows[0].authorized_tenants;
+      return Array.isArray(tenants) ? tenants : [];
+    } catch (error) {
+      console.error('Error getting authorized tenants:', error);
+      return [];
+    }
+  }
 }
 
 module.exports = XeroSettings; 
