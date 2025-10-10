@@ -112,8 +112,12 @@ const limiter = rateLimit({
   },
   standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
   legacyHeaders: false, // Disable the `X-RateLimit-*` headers
-  onLimitReached: (req, res, options) => {
+  handler: (req, res) => {
     console.log('🚫 Rate limit reached for IP:', req.ip, 'Path:', req.path);
+    res.status(429).json({
+      success: false,
+      message: 'Too many requests, please try again later.'
+    });
   }
 });
 app.use(limiter);

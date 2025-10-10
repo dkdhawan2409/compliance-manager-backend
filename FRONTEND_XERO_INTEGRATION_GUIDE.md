@@ -2,6 +2,188 @@
 
 This guide provides complete frontend implementation details for integrating with the updated Xero backend that now properly saves organization and tenant data.
 
+## 🏠 Localhost Setup
+
+### Backend Configuration (This Repository)
+
+1. **Update your existing `.env` file** for localhost development:
+
+```bash
+# Server Configuration
+PORT=3333
+NODE_ENV=development
+
+# Database Configuration (keep your existing database settings)
+DB_HOST=dpg-d1sia5nfte5s73fqq74g-a.oregon-postgres.render.com
+DB_PORT=5432
+DB_NAME=compliance_manager
+DB_USER=compliance_manager_user
+DB_PASSWORD=hcW7GQEmPXD6GJATSB55kvYb98cuUbVM
+
+# JWT Configuration (keep your existing settings)
+JWT_SECRET=ad94487608cbb42709f2de9c75f7fa5592be6c9ca5da3ba0cc49586700110674
+JWT_EXPIRES_IN=7d
+
+# Security
+BCRYPT_SALT_ROUNDS=12
+
+# CORS - Frontend URL for localhost
+CORS_ORIGIN=http://localhost:3001
+FRONTEND_URL=http://localhost:3001
+
+# Xero OAuth2 Configuration
+XERO_CLIENT_ID=8113118D16A84C8199677E98E3D8A446
+XERO_CLIENT_SECRET=7orP8-c5dcSdusqbOS9CdNm2GvYCVACiM8c_b1P2tP8tAzyZ
+
+# 🚨 IMPORTANT: For localhost development, change this to:
+XERO_REDIRECT_URI=http://localhost:3333/xero-callback
+
+# For production, use:
+# XERO_REDIRECT_URI=https://compliance-manager-frontend.onrender.com/redirecturl
+
+# OpenAI Configuration (optional)
+OPENAI_API_KEY=your_openai_key
+
+# Email Configuration (optional)
+SENDGRID_API_KEY=your_sendgrid_key
+EMAIL_FROM=noreply@yourdomain.com
+```
+
+**⚠️ Important Notes:**
+- Your backend runs on port **3333** (not 5000)
+- Your frontend should run on **http://localhost:3001**
+- You must update the `XERO_REDIRECT_URI` in **both** your `.env` file **AND** Xero Developer Console
+
+2. **Start the backend server**:
+
+```bash
+# Install dependencies
+npm install
+
+# Run in development mode with auto-reload
+npm run dev
+```
+
+The backend will be available at: **`http://localhost:3333`**
+
+### Frontend Configuration
+
+1. **Create API client configuration** in your frontend project:
+
+```typescript
+// src/config/api.ts or src/utils/api.ts
+
+import axios from 'axios';
+
+// API Base URL for localhost development
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:3333/api';
+
+// Create axios instance with default config
+export const apiClient = axios.create({
+  baseURL: API_BASE_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  withCredentials: true, // Important for CORS with credentials
+});
+
+// Add request interceptor to attach JWT token
+apiClient.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem('authToken');
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
+
+// Add response interceptor for error handling
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      // Handle unauthorized - redirect to login
+      localStorage.removeItem('authToken');
+      window.location.href = '/login';
+    }
+    return Promise.reject(error);
+  }
+);
+
+export default apiClient;
+```
+
+2. **Create `.env.local` file** in your frontend root:
+
+```bash
+# React/Vite Frontend Environment Variables
+REACT_APP_API_URL=http://localhost:3333/api
+
+# For Vite, use:
+# VITE_API_URL=http://localhost:3333/api
+```
+
+3. **Update package.json** (if using Create React App):
+
+```json
+{
+  "proxy": "http://localhost:3333"
+}
+```
+
+### Testing Localhost Setup
+
+1. **Test backend health**:
+```bash
+curl http://localhost:3333/health
+```
+
+Expected response:
+```json
+{
+  "success": true,
+  "message": "Server is running",
+  "timestamp": "2024-01-01T00:00:00.000Z"
+}
+```
+
+2. **Test API endpoint**:
+```bash
+curl http://localhost:3333/api/health
+```
+
+Expected response:
+```json
+{
+  "success": true,
+  "message": "API server is running",
+  "timestamp": "2024-01-01T00:00:00.000Z",
+  "version": "1.0.0"
+}
+```
+
+### Xero OAuth Setup for Localhost
+
+1. **Go to Xero Developer Portal**: https://developer.xero.com/app/manage
+2. **Select your app** (or create new one if needed)
+3. **Add localhost redirect URI**:
+   - Click "Add Redirect URI"
+   - Add: `http://localhost:3333/xero-callback`
+   - Click "Save"
+4. **Update your `.env` file**:
+   ```bash
+   XERO_REDIRECT_URI=http://localhost:3333/xero-callback
+   ```
+5. **Restart your backend server** after changing `.env`
+
+**🔴 Common Mistake**: The Xero redirect URI in your `.env` file **must exactly match** the one in Xero Developer Console (including protocol, port, and path).
+
+---
+
 ## 🎯 Overview of Changes
 
 The backend now saves the following additional data after OAuth:
@@ -180,8 +362,8 @@ Display the connected organization name and handle reconnection for expired toke
 ```typescript
 import { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import axios from 'axios';
 import { toast } from 'react-hot-toast';
+import { apiClient } from '../config/api'; // Import the configured API client
 
 interface XeroConnectionInfo {
   isConnected: boolean;
@@ -247,10 +429,8 @@ const XeroIntegrationPage = () => {
 
   const checkBackendConnection = async () => {
     try {
-      const token = localStorage.getItem('authToken'); // Your JWT token
-      const response = await axios.get('/api/xero/settings', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      // No need to manually add token - apiClient handles it automatically
+      const response = await apiClient.get('/xero/settings');
       
       if (response.data.success && response.data.data.isConnected) {
         const tenants = response.data.data.tenants || [];
@@ -283,12 +463,9 @@ const XeroIntegrationPage = () => {
   const handleConnectXero = async () => {
     try {
       setIsLoading(true);
-      const token = localStorage.getItem('authToken');
       
-      // Get auth URL from backend
-      const response = await axios.get('/api/xero/login', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      // Get auth URL from backend - apiClient adds the token automatically
+      const response = await apiClient.get('/xero/login');
       
       if (response.data.success) {
         // Redirect to Xero OAuth page
@@ -319,12 +496,9 @@ const XeroIntegrationPage = () => {
     
     try {
       setIsLoading(true);
-      const token = localStorage.getItem('authToken');
       
-      // Optional: Call backend to revoke tokens
-      await axios.post('/api/xero/disconnect', {}, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      // Optional: Call backend to revoke tokens - apiClient adds the token automatically
+      await apiClient.post('/xero/disconnect');
       
       // Clear localStorage
       localStorage.removeItem('xeroConnected');
@@ -446,16 +620,42 @@ export default XeroIntegrationPage;
 
 ### 3. **Handle Expired Token Errors**
 
-Add global error handling for expired Xero tokens:
+The apiClient already includes error handling, but you can add Xero-specific handling:
 
 ```typescript
-// axios interceptor or error handling utility
+// Add this to your src/config/api.ts file (update the apiClient)
 
 import axios from 'axios';
 import { toast } from 'react-hot-toast';
 
-// Add response interceptor
-axios.interceptors.response.use(
+// API Base URL for localhost development
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:3333/api';
+
+// Create axios instance with default config
+export const apiClient = axios.create({
+  baseURL: API_BASE_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  withCredentials: true,
+});
+
+// Add request interceptor to attach JWT token
+apiClient.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem('authToken');
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
+
+// Add response interceptor for error handling (including Xero errors)
+apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
     const errorData = error.response?.data;
@@ -471,20 +671,25 @@ axios.interceptors.response.use(
       // Show reconnection prompt
       toast.error('Xero connection expired. Please reconnect to Xero.', {
         duration: 5000,
-        action: {
-          label: 'Reconnect',
-          onClick: () => {
-            window.location.href = '/xero-integration';
-          }
-        }
       });
+      
+      // Optional: Redirect to Xero integration page
+      setTimeout(() => {
+        window.location.href = '/xero-integration';
+      }, 2000);
     } else if (errorData?.error === 'XERO_NOT_CONFIGURED' || errorData?.requiresConfiguration) {
       toast.error('Xero is not configured. Please connect to Xero first.');
+    } else if (error.response?.status === 401) {
+      // Handle unauthorized - redirect to login
+      localStorage.removeItem('authToken');
+      window.location.href = '/login';
     }
     
     return Promise.reject(error);
   }
 );
+
+export default apiClient;
 ```
 
 ---
@@ -523,6 +728,9 @@ const DashboardHeader = () => {
 ### 5. **BAS/FAS Data Loading Components**
 
 ```typescript
+import { useEffect, useState } from 'react';
+import { apiClient } from '../config/api'; // Import the configured API client
+
 const BASDataPage = () => {
   const [basData, setBasData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -537,10 +745,8 @@ const BASDataPage = () => {
       setIsLoading(true);
       setError(null);
       
-      const token = localStorage.getItem('authToken');
-      const response = await axios.get('/api/xero/bas-data', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      // apiClient handles authentication automatically
+      const response = await apiClient.get('/xero/bas-data');
       
       if (response.data.success) {
         setBasData(response.data.data);
@@ -562,31 +768,47 @@ const BASDataPage = () => {
   };
   
   if (isLoading) {
-    return <div>Loading BAS data from Xero...</div>;
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-gray-700">Loading BAS data from Xero...</p>
+        </div>
+      </div>
+    );
   }
   
   if (error) {
     return (
-      <div className="bg-red-50 border border-red-200 rounded p-4">
-        <p className="text-red-800">{error}</p>
-        <button 
-          onClick={() => window.location.href = '/xero-integration'}
-          className="mt-2 text-blue-600 hover:underline"
-        >
-          Go to Xero Integration
-        </button>
+      <div className="max-w-2xl mx-auto mt-8">
+        <div className="bg-red-50 border border-red-200 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-red-800 mb-2">Error Loading BAS Data</h3>
+          <p className="text-red-700 mb-4">{error}</p>
+          <button 
+            onClick={() => window.location.href = '/xero-integration'}
+            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+          >
+            Go to Xero Integration
+          </button>
+        </div>
       </div>
     );
   }
   
   return (
-    <div>
-      <h2>BAS Data</h2>
-      {/* Render BAS data */}
-      <pre>{JSON.stringify(basData, null, 2)}</pre>
+    <div className="max-w-6xl mx-auto p-6">
+      <h2 className="text-2xl font-bold mb-6">BAS Data</h2>
+      <div className="bg-white rounded-lg shadow p-6">
+        {/* Render BAS data - customize based on your data structure */}
+        <pre className="bg-gray-50 p-4 rounded overflow-auto">
+          {JSON.stringify(basData, null, 2)}
+        </pre>
+      </div>
     </div>
   );
 };
+
+export default BASDataPage;
 ```
 
 ---
@@ -685,5 +907,134 @@ If you encounter issues:
 2. Verify localStorage has `xeroConnected`, `xeroOrganizationName`, and `xeroTenantId`
 3. Check backend logs for OAuth callback processing
 4. Ensure database has `organization_name` and `tenant_data` columns
+
+---
+
+## 🚀 Quick Start Guide (Localhost)
+
+### Step 1: Backend Setup
+
+```bash
+# Navigate to backend directory
+cd /Users/harbor/Desktop/compliance-management-system/backend
+
+# Install dependencies
+npm install
+
+# Create .env file (see .env.example)
+cp .env.example .env
+
+# Edit .env with your actual values
+nano .env
+
+# Start the backend server
+npm run dev
+```
+
+Backend will run at: **http://localhost:3333**
+
+### Step 2: Test Backend
+
+```bash
+# Test health endpoint
+curl http://localhost:3333/health
+
+# Test API endpoint
+curl http://localhost:3333/api/health
+```
+
+### Step 3: Frontend Setup
+
+In your frontend project:
+
+```bash
+# Create API configuration
+mkdir -p src/config
+touch src/config/api.ts
+
+# Add the apiClient code (from section above)
+# Copy the code from "Frontend Configuration" section
+
+# Create .env.local
+echo "REACT_APP_API_URL=http://localhost:3333/api" > .env.local
+
+# For Vite projects:
+echo "VITE_API_URL=http://localhost:3333/api" > .env.local
+
+# Install dependencies if needed
+npm install axios react-hot-toast react-router-dom
+
+# Start frontend
+npm start
+```
+
+### Step 4: Test Integration
+
+1. **Open frontend**: http://localhost:3001
+2. **Login** to your application
+3. **Navigate to Xero Integration** page
+4. **Click "Connect to Xero"**
+5. **Authorize** on Xero's page
+6. **Verify** you see the organization name after redirect
+
+### Common Issues & Solutions
+
+#### Issue: CORS Error
+**Solution**: Ensure backend `.env` has:
+```bash
+FRONTEND_URL=http://localhost:3001
+CORS_ORIGIN=http://localhost:3001
+```
+
+#### Issue: 401 Unauthorized
+**Solution**: Check if JWT token is being stored and sent correctly
+
+#### Issue: Xero OAuth fails
+**Solution**: 
+1. Verify Xero redirect URI in `.env`: `http://localhost:3333/xero-callback`
+2. Add the same URI in Xero Developer Console
+3. Restart backend after changing `.env`
+4. Ensure `XERO_CLIENT_ID` and `XERO_CLIENT_SECRET` are correct
+
+#### Issue: Database connection fails
+**Solution**: Verify PostgreSQL is running and credentials in `.env` are correct
+
+```bash
+# Check PostgreSQL status
+psql -U your_db_user -d compliance_management -c "SELECT 1;"
+```
+
+---
+
+## 📝 Environment Variables Reference
+
+### Backend (.env)
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `NODE_ENV` | Environment mode | `development` or `production` |
+| `PORT` | Server port | `3333` |
+| `DB_HOST` | Database host | `localhost` or remote host |
+| `DB_PORT` | Database port | `5432` |
+| `DB_NAME` | Database name | `compliance_manager` |
+| `DB_USER` | Database user | `compliance_manager_user` |
+| `DB_PASSWORD` | Database password | `your_password` |
+| `JWT_SECRET` | JWT secret key | `your-secret-key` |
+| `JWT_EXPIRES_IN` | JWT expiration | `7d` |
+| `BCRYPT_SALT_ROUNDS` | Password hashing rounds | `12` |
+| `CORS_ORIGIN` | CORS allowed origin | `http://localhost:3001` |
+| `FRONTEND_URL` | Frontend URL | `http://localhost:3001` |
+| `XERO_CLIENT_ID` | Xero OAuth client ID | From Xero Developer Console |
+| `XERO_CLIENT_SECRET` | Xero OAuth secret | From Xero Developer Console |
+| `XERO_REDIRECT_URI` | Xero callback URI | `http://localhost:3333/xero-callback` |
+
+### Frontend (.env.local)
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `REACT_APP_API_URL` | Backend API URL (React) | `http://localhost:3333/api` |
+| `VITE_API_URL` | Backend API URL (Vite) | `http://localhost:3333/api` |
+
+
 
 
