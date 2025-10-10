@@ -569,18 +569,60 @@ const getConnectionStatus = async (req, res) => {
     const isTokenValid = hasTokens && (!hasExpiry || (tokenExpiry && tokenExpiry > new Date(now.getTime() + bufferTime)));
     const hasCredentials = !!(settings.client_id && settings.client_secret);
 
-    // Parse tenant data
+    // Parse tenant data - try new authorized_tenants column first, then fallback to tenant_data
     let tenants = [];
     try {
-      if (settings.tenant_data) {
+      // Try new authorized_tenants column first
+      if (settings.authorized_tenants) {
+        tenants = typeof settings.authorized_tenants === 'string' 
+          ? JSON.parse(settings.authorized_tenants) 
+          : settings.authorized_tenants;
+        console.log('✅ Retrieved tenant data from authorized_tenants:', tenants.length, 'tenants');
+      } else if (settings.tenant_data) {
+        // Fallback to old tenant_data column
         tenants = JSON.parse(settings.tenant_data);
-        console.log('✅ Retrieved tenant data from database:', tenants.length, 'tenants');
+        console.log('✅ Retrieved tenant data from tenant_data (fallback):', tenants.length, 'tenants');
       } else {
-        console.warn('⚠️ No tenant data found in database');
+        console.warn('⚠️ No tenant data found in database (neither authorized_tenants nor tenant_data)');
       }
     } catch (e) {
       console.error('❌ Failed to parse tenant data:', e);
       tenants = [];
+    }
+
+    // If no tenants found and we have a valid token, try to fetch from Xero API
+    if ((!tenants || tenants.length === 0) && isTokenValid && settings.access_token) {
+      console.log('🔄 No tenants in database, fetching from Xero API in connection status...');
+      try {
+        const tenantsResponse = await axios.get('https://api.xero.com/connections', {
+          headers: { 
+            Authorization: `Bearer ${settings.access_token}`, 
+            'Content-Type': 'application/json' 
+          }
+        });
+
+        if (tenantsResponse.data && tenantsResponse.data.length > 0) {
+          tenants = tenantsResponse.data.map(conn => ({
+            id: conn.tenantId,
+            tenantId: conn.tenantId,
+            name: conn.tenantName || 'Unknown Organization',
+            tenantName: conn.tenantName || 'Unknown Organization',
+            organizationName: conn.tenantName || 'Unknown Organization',
+            connectionId: conn.id
+          }));
+
+          // Save to database for future requests
+          await db.query(
+            'UPDATE xero_settings SET authorized_tenants = $1 WHERE company_id = $2',
+            [JSON.stringify(tenants), companyId]
+          );
+          
+          console.log(`✅ Fetched and saved ${tenants.length} tenants from Xero API in connection status`);
+        }
+      } catch (apiError) {
+        console.error('❌ Failed to fetch tenants from Xero API in connection status:', apiError.message);
+        // Don't fail the entire request if tenant fetch fails
+      }
     }
 
     // Add cache-busting headers
