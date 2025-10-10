@@ -432,6 +432,47 @@ class XeroSettings {
       throw error;
     }
   }
+
+  /**
+   * Get settings for a company
+   */
+  static async getSettings(companyId) {
+    try {
+      const result = await db.query(
+        'SELECT * FROM xero_settings WHERE company_id = $1',
+        [companyId]
+      );
+      
+      return result.rows[0] || null;
+    } catch (error) {
+      console.error('Error getting Xero settings:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update tokens for a company
+   */
+  static async updateTokens(companyId, tokens) {
+    try {
+      const { accessToken, refreshToken, tokenExpiresAt } = tokens;
+      
+      const result = await db.query(`
+        UPDATE xero_settings 
+        SET access_token = $1, 
+            refresh_token = $2, 
+            token_expires_at = $3,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE company_id = $4
+        RETURNING *
+      `, [accessToken, refreshToken, tokenExpiresAt, companyId]);
+      
+      return result.rows[0];
+    } catch (error) {
+      console.error('Error updating Xero tokens:', error);
+      throw error;
+    }
+  }
 }
 
 module.exports = XeroSettings; 

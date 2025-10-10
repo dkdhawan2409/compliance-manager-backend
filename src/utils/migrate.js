@@ -464,6 +464,99 @@ async function migrateAnomalyDetection() {
 }
 
 /**
+ * Migrate Xero data cache tables
+ */
+async function migrateXeroDataCache() {
+  try {
+    console.log('🔄 Migrating Xero data cache tables...');
+    
+    // Create xero_data_cache table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS xero_data_cache (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER REFERENCES companies(id) ON DELETE CASCADE,
+        tenant_id VARCHAR(255),
+        data_type VARCHAR(100) NOT NULL,
+        data JSONB,
+        last_synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        expires_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(company_id, tenant_id, data_type)
+      )
+    `);
+    
+    // Create indexes for better performance
+    await db.query(`
+      CREATE INDEX IF NOT EXISTS idx_xero_data_cache_company_id ON xero_data_cache(company_id)
+    `);
+    
+    await db.query(`
+      CREATE INDEX IF NOT EXISTS idx_xero_data_cache_tenant_id ON xero_data_cache(tenant_id)
+    `);
+    
+    await db.query(`
+      CREATE INDEX IF NOT EXISTS idx_xero_data_cache_data_type ON xero_data_cache(data_type)
+    `);
+    
+    await db.query(`
+      CREATE INDEX IF NOT EXISTS idx_xero_data_cache_expires_at ON xero_data_cache(expires_at)
+    `);
+    
+    // Create xero_sync_history table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS xero_sync_history (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER REFERENCES companies(id) ON DELETE CASCADE,
+        sync_type VARCHAR(100) NOT NULL,
+        status VARCHAR(50) NOT NULL CHECK (status IN ('success', 'failed', 'partial')),
+        records_synced INTEGER DEFAULT 0,
+        error_message TEXT,
+        sync_duration_ms INTEGER,
+        synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        metadata JSONB
+      )
+    `);
+    
+    // Create indexes for sync history
+    await db.query(`
+      CREATE INDEX IF NOT EXISTS idx_xero_sync_history_company_id ON xero_sync_history(company_id)
+    `);
+    
+    await db.query(`
+      CREATE INDEX IF NOT EXISTS idx_xero_sync_history_sync_type ON xero_sync_history(sync_type)
+    `);
+    
+    await db.query(`
+      CREATE INDEX IF NOT EXISTS idx_xero_sync_history_status ON xero_sync_history(status)
+    `);
+    
+    await db.query(`
+      CREATE INDEX IF NOT EXISTS idx_xero_sync_history_synced_at ON xero_sync_history(synced_at)
+    `);
+    
+    // Add trigger for updated_at on xero_data_cache
+    await db.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'update_xero_data_cache_updated_at') THEN
+          CREATE TRIGGER update_xero_data_cache_updated_at
+            BEFORE UPDATE ON xero_data_cache
+            FOR EACH ROW
+            EXECUTE FUNCTION update_updated_at_column();
+        END IF;
+      END $$;
+    `);
+    
+    console.log('✅ Xero data cache tables migration completed successfully');
+    
+  } catch (error) {
+    console.error('❌ Error during Xero data cache migration:', error);
+    console.log('⚠️  Continuing with other migrations...');
+  }
+}
+
+/**
  * Run all migrations with retry logic
  */
 async function runAllMigrations() {
@@ -491,6 +584,9 @@ async function runAllMigrations() {
       
       // Run anomaly detection migration
       await migrateAnomalyDetection();
+      
+      // Run Xero data cache migration
+      await migrateXeroDataCache();
       
       console.log('✅ All migrations completed successfully');
       return;
@@ -541,4 +637,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { createTables, dropTables, addRoleColumn, migrateOpenAISettings, migrateNotificationTemplates, migrateAnomalyDetection, runAllMigrations };
+module.exports = { createTables, dropTables, addRoleColumn, migrateOpenAISettings, migrateNotificationTemplates, migrateAnomalyDetection, migrateXeroDataCache, runAllMigrations };

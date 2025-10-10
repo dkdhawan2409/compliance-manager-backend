@@ -339,8 +339,43 @@ const handleCallback = async (req, res) => {
     const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
     console.log('📅 Token expires at:', expiresAt.toISOString());
 
-    // Store tokens and tenant info
-    console.log('💾 Saving tokens to database for company:', companyId);
+    // Fetch organization details for each tenant
+    console.log('🏢 Fetching organization details...');
+    const organizationDetails = [];
+    
+    for (const tenant of tenants) {
+      try {
+        const orgResponse = await axios.get(`https://api.xero.com/api.xro/2.0/Organisation`, {
+          headers: {
+            'Authorization': `Bearer ${tokens.access_token}`,
+            'Xero-tenant-id': tenant.tenantId,
+            'Accept': 'application/json'
+          }
+        });
+        
+        const orgData = orgResponse.data.Organisations?.[0];
+        if (orgData) {
+          organizationDetails.push({
+            ...tenant,
+            organizationName: orgData.Name,
+            organizationCountry: orgData.CountryCode,
+            organizationTaxNumber: orgData.TaxNumber,
+            organizationLegalName: orgData.LegalName,
+            organizationShortCode: orgData.ShortCode
+          });
+          console.log(`✅ Fetched organization: ${orgData.Name} (${tenant.tenantId})`);
+        } else {
+          organizationDetails.push(tenant);
+          console.log(`⚠️  No organization data for tenant: ${tenant.tenantId}`);
+        }
+      } catch (error) {
+        console.error(`❌ Error fetching organization for tenant ${tenant.tenantId}:`, error.message);
+        organizationDetails.push(tenant);
+      }
+    }
+
+    // Store tokens and tenant info with organization details
+    console.log('💾 Saving tokens and organization data to database for company:', companyId);
     await db.query(`
       INSERT INTO xero_settings (
         company_id, 
@@ -352,9 +387,11 @@ const handleCallback = async (req, res) => {
         token_expires_at,
         xero_user_id,
         tenant_data,
+        tenant_id,
+        organization_name,
         created_at, 
         updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
       ON CONFLICT (company_id) 
       DO UPDATE SET 
         access_token = $5,
@@ -362,6 +399,8 @@ const handleCallback = async (req, res) => {
         token_expires_at = $7,
         xero_user_id = $8,
         tenant_data = $9,
+        tenant_id = $10,
+        organization_name = $11,
         updated_at = NOW()
     `, [
       companyId,
@@ -372,7 +411,10 @@ const handleCallback = async (req, res) => {
       tokens.refresh_token,
       expiresAt,
       tokens.xero_userid || null,
-      JSON.stringify(tenants)
+      JSON.stringify(organizationDetails),
+      organizationDetails[0]?.tenantId || null,
+      organizationDetails[0]?.organizationName || null,
+      organizationDetails
     ]);
 
     // Clean up state
@@ -381,6 +423,21 @@ const handleCallback = async (req, res) => {
     console.log('✅ Xero OAuth2 flow completed successfully');
     console.log('💾 Tokens saved to database');
     console.log('🧹 OAuth state cleaned up');
+
+    // Trigger initial data sync in background
+    if (organizationDetails.length > 0) {
+      console.log('🔄 Triggering initial data sync in background...');
+      const xeroSyncService = require('../services/xeroSyncService');
+      
+      // Run sync in background without blocking the response
+      xeroSyncService.syncInitialData(companyId, tokens.access_token, organizationDetails[0].tenantId)
+        .then(result => {
+          console.log(`✅ Initial sync completed for company ${companyId}:`, result);
+        })
+        .catch(error => {
+          console.error(`❌ Initial sync failed for company ${companyId}:`, error);
+        });
+    }
 
     // Handle response based on request method
     if (req.method === 'GET') {
@@ -418,12 +475,16 @@ const handleCallback = async (req, res) => {
             expiresIn: tokens.expires_in,
             tokenType: tokens.token_type || 'Bearer'
           },
-          tenants: tenants.map(t => ({
+          tenants: organizationDetails.map(t => ({
             id: t.tenantId,
-            name: t.tenantName || t.organisationName,
-            organizationName: t.organisationName,
+            name: t.organizationName || t.tenantName || t.organisationName,
+            organizationName: t.organizationName || t.organisationName,
             tenantName: t.tenantName,
-            tenantId: t.tenantId
+            tenantId: t.tenantId,
+            country: t.organizationCountry,
+            taxNumber: t.organizationTaxNumber,
+            legalName: t.organizationLegalName,
+            shortCode: t.organizationShortCode
           })),
           companyId: companyId.toString()
         }
@@ -485,7 +546,10 @@ const getConnectionStatus = async (req, res) => {
     const hasTokens = !!(settings.access_token && settings.refresh_token);
     const hasExpiry = !!settings.token_expires_at;
     const tokenExpiry = hasExpiry ? new Date(settings.token_expires_at) : null;
-    const isTokenValid = hasTokens && hasExpiry && tokenExpiry > now;
+    
+    // More lenient token validation - allow 5 minute buffer
+    const bufferTime = 5 * 60 * 1000; // 5 minutes in milliseconds
+    const isTokenValid = hasTokens && (!hasExpiry || (tokenExpiry && tokenExpiry > new Date(now.getTime() + bufferTime)));
     const hasCredentials = !!(settings.client_id && settings.client_secret);
 
     // Parse tenant data
@@ -515,7 +579,9 @@ const getConnectionStatus = async (req, res) => {
       isTokenValid,
       tenantsCount: tenants.length,
       hasCredentials,
-      tenantNames: tenants.map(t => t.tenantName || t.organisationName)
+      tenantNames: tenants.map(t => t.tenantName || t.organisationName),
+      tokenExpiry: settings.token_expires_at,
+      currentTime: new Date().toISOString()
     });
 
     res.json({
@@ -527,13 +593,30 @@ const getConnectionStatus = async (req, res) => {
         tenants: tenants.map(t => ({
           tenantId: t.tenantId,
           tenantName: t.tenantName,
-          organisationName: t.organisationName
+          organisationName: t.organisationName,
+          organizationName: t.organizationName || t.organisationName,
+          organizationCountry: t.organizationCountry,
+          organizationTaxNumber: t.organizationTaxNumber,
+          organizationLegalName: t.organizationLegalName,
+          organizationShortCode: t.organizationShortCode
         })),
+        primaryOrganization: settings.organization_name ? {
+          id: settings.tenant_id,
+          name: settings.organization_name
+        } : null,
         xeroUserId: settings.xero_user_id,
         hasExpiredTokens: hasTokens && !isTokenValid, // Has tokens but they're expired
         hasCredentials: hasCredentials,
         needsOAuth: hasCredentials && !hasTokens, // Has credentials but no tokens yet
-        timestamp: new Date().toISOString() // Add timestamp for debugging
+        timestamp: new Date().toISOString(), // Add timestamp for debugging
+        // Add debug info
+        debug: {
+          hasTokens,
+          hasExpiry,
+          tokenExpiry: settings.token_expires_at,
+          currentTime: new Date().toISOString(),
+          isTokenValid
+        }
       }
     });
 
@@ -1012,6 +1095,191 @@ const disconnect = async (req, res) => {
   }
 };
 
+// Additional controller methods for new routes
+
+const getOrganizations = async (req, res) => {
+  try {
+    const companyId = req.company.id;
+    const xeroDataService = require('../services/xeroDataService');
+    const token = await xeroDataService.getValidToken(companyId);
+    
+    const organizations = await xeroDataService.fetchOrganizations(token.accessToken, token.tenantId);
+    
+    res.json({
+      success: true,
+      data: organizations,
+      message: 'Organizations retrieved successfully'
+    });
+  } catch (error) {
+    console.error('❌ Error getting organizations:', error);
+    res.status(500).json({
+      success: false,
+      error: 'ORGANIZATIONS_FETCH_FAILED',
+      message: error.message
+    });
+  }
+};
+
+const syncData = async (req, res) => {
+  try {
+    const companyId = req.company.id;
+    const { dataType } = req.body;
+    
+    const xeroSyncService = require('../services/xeroSyncService');
+    const result = await xeroSyncService.syncDataType(companyId, dataType, req.body);
+    
+    res.json({
+      success: true,
+      message: `${dataType} data synced successfully`,
+      syncResult: result
+    });
+  } catch (error) {
+    console.error('❌ Error syncing data:', error);
+    res.status(500).json({
+      success: false,
+      error: 'DATA_SYNC_FAILED',
+      message: error.message
+    });
+  }
+};
+
+const syncAllData = async (req, res) => {
+  try {
+    const companyId = req.company.id;
+    
+    const xeroSyncService = require('../services/xeroSyncService');
+    const result = await xeroSyncService.syncAllData(companyId);
+    
+    res.json({
+      success: true,
+      message: 'All data synced successfully',
+      syncResult: result
+    });
+  } catch (error) {
+    console.error('❌ Error syncing all data:', error);
+    res.status(500).json({
+      success: false,
+      error: 'FULL_SYNC_FAILED',
+      message: error.message
+    });
+  }
+};
+
+const getInvoices = async (req, res) => {
+  try {
+    const companyId = req.company.id;
+    const xeroDataService = require('../services/xeroDataService');
+    const token = await xeroDataService.getValidToken(companyId);
+    
+    const invoices = await xeroDataService.fetchInvoices(token.accessToken, token.tenantId, req.query);
+    
+    res.json({
+      success: true,
+      data: invoices,
+      message: 'Invoices retrieved successfully'
+    });
+  } catch (error) {
+    console.error('❌ Error getting invoices:', error);
+    res.status(500).json({
+      success: false,
+      error: 'INVOICES_FETCH_FAILED',
+      message: error.message
+    });
+  }
+};
+
+const getContacts = async (req, res) => {
+  try {
+    const companyId = req.company.id;
+    const xeroDataService = require('../services/xeroDataService');
+    const token = await xeroDataService.getValidToken(companyId);
+    
+    const contacts = await xeroDataService.fetchContacts(token.accessToken, token.tenantId, req.query);
+    
+    res.json({
+      success: true,
+      data: contacts,
+      message: 'Contacts retrieved successfully'
+    });
+  } catch (error) {
+    console.error('❌ Error getting contacts:', error);
+    res.status(500).json({
+      success: false,
+      error: 'CONTACTS_FETCH_FAILED',
+      message: error.message
+    });
+  }
+};
+
+const getAccounts = async (req, res) => {
+  try {
+    const companyId = req.company.id;
+    const xeroDataService = require('../services/xeroDataService');
+    const token = await xeroDataService.getValidToken(companyId);
+    
+    const accounts = await xeroDataService.fetchAccounts(token.accessToken, token.tenantId);
+    
+    res.json({
+      success: true,
+      data: accounts,
+      message: 'Accounts retrieved successfully'
+    });
+  } catch (error) {
+    console.error('❌ Error getting accounts:', error);
+    res.status(500).json({
+      success: false,
+      error: 'ACCOUNTS_FETCH_FAILED',
+      message: error.message
+    });
+  }
+};
+
+const getBills = async (req, res) => {
+  try {
+    const companyId = req.company.id;
+    const xeroDataService = require('../services/xeroDataService');
+    const token = await xeroDataService.getValidToken(companyId);
+    
+    const bills = await xeroDataService.fetchBills(token.accessToken, token.tenantId, req.query);
+    
+    res.json({
+      success: true,
+      data: bills,
+      message: 'Bills retrieved successfully'
+    });
+  } catch (error) {
+    console.error('❌ Error getting bills:', error);
+    res.status(500).json({
+      success: false,
+      error: 'BILLS_FETCH_FAILED',
+      message: error.message
+    });
+  }
+};
+
+const getBankTransactions = async (req, res) => {
+  try {
+    const companyId = req.company.id;
+    const xeroDataService = require('../services/xeroDataService');
+    const token = await xeroDataService.getValidToken(companyId);
+    
+    const transactions = await xeroDataService.fetchBankTransactions(token.accessToken, token.tenantId, req.query);
+    
+    res.json({
+      success: true,
+      data: transactions,
+      message: 'Bank transactions retrieved successfully'
+    });
+  } catch (error) {
+    console.error('❌ Error getting bank transactions:', error);
+    res.status(500).json({
+      success: false,
+      error: 'BANK_TRANSACTIONS_FETCH_FAILED',
+      message: error.message
+    });
+  }
+};
+
 module.exports = {
   getAuthUrl,
   connectXero,
@@ -1020,5 +1288,13 @@ module.exports = {
   getXeroData,
   getTenants,
   disconnect,
-  refreshToken
+  refreshToken,
+  getOrganizations,
+  syncData,
+  syncAllData,
+  getInvoices,
+  getContacts,
+  getAccounts,
+  getBills,
+  getBankTransactions
 };
