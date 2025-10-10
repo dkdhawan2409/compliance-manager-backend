@@ -374,6 +374,20 @@ const handleCallback = async (req, res) => {
       }
     }
 
+    // Prepare authorized tenants data in new format
+    const authorizedTenants = organizationDetails.map(tenant => ({
+      id: tenant.tenantId,
+      tenantId: tenant.tenantId,
+      name: tenant.organizationName || tenant.tenantName || tenant.organisationName || 'Unknown Organization',
+      tenantName: tenant.tenantName || tenant.organisationName || 'Unknown Organization',
+      organizationName: tenant.organizationName || tenant.tenantName || tenant.organisationName || 'Unknown Organization',
+      connectionId: tenant.id || null,
+      organizationCountry: tenant.organizationCountry,
+      organizationTaxNumber: tenant.organizationTaxNumber,
+      organizationLegalName: tenant.organizationLegalName,
+      organizationShortCode: tenant.organizationShortCode
+    }));
+
     // Store tokens and tenant info with organization details
     console.log('💾 Saving tokens and organization data to database for company:', companyId);
     await db.query(`
@@ -387,11 +401,12 @@ const handleCallback = async (req, res) => {
         token_expires_at,
         xero_user_id,
         tenant_data,
+        authorized_tenants,
         tenant_id,
         organization_name,
         created_at, 
         updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
       ON CONFLICT (company_id) 
       DO UPDATE SET 
         access_token = $5,
@@ -399,8 +414,9 @@ const handleCallback = async (req, res) => {
         token_expires_at = $7,
         xero_user_id = $8,
         tenant_data = $9,
-        tenant_id = $10,
-        organization_name = $11,
+        authorized_tenants = $10,
+        tenant_id = $11,
+        organization_name = $12,
         updated_at = NOW()
     `, [
       companyId,
@@ -412,6 +428,7 @@ const handleCallback = async (req, res) => {
       expiresAt,
       tokens.xero_userid || null,
       JSON.stringify(organizationDetails),
+      JSON.stringify(authorizedTenants),
       organizationDetails[0]?.tenantId || null,
       organizationDetails[0]?.organizationName || null,
       organizationDetails
@@ -1024,35 +1041,122 @@ const getTenants = async (req, res) => {
   try {
     const companyId = req.company.id;
     
+    // Get xero settings with authorized_tenants
     const result = await db.query(
-      'SELECT tenant_data FROM xero_settings WHERE company_id = $1',
+      'SELECT authorized_tenants, access_token, tenant_data FROM xero_settings WHERE company_id = $1',
       [companyId]
     );
 
     if (result.rows.length === 0) {
-      return res.status(400).json({
+      return res.status(404).json({
         success: false,
-        message: 'Not connected to Xero'
+        message: 'Not connected to Xero. Please connect first.'
       });
     }
 
-    const tenants = JSON.parse(result.rows[0].tenant_data || '[]');
+    const settings = result.rows[0];
     
+    // Try new authorized_tenants column first
+    let tenants = [];
+    try {
+      if (settings.authorized_tenants) {
+        tenants = typeof settings.authorized_tenants === 'string' 
+          ? JSON.parse(settings.authorized_tenants) 
+          : settings.authorized_tenants;
+      }
+    } catch (parseError) {
+      console.log('⚠️ Error parsing authorized_tenants:', parseError.message);
+    }
+
+    // If no tenants in new column, try old tenant_data column for backward compatibility
+    if (!tenants || tenants.length === 0) {
+      try {
+        if (settings.tenant_data) {
+          const oldTenants = JSON.parse(settings.tenant_data);
+          if (oldTenants && oldTenants.length > 0) {
+            // Migrate to new format and save
+            tenants = oldTenants.map(t => ({
+              id: t.tenantId,
+              tenantId: t.tenantId,
+              name: t.tenantName || t.organisationName || 'Unknown Organization',
+              tenantName: t.tenantName || t.organisationName || 'Unknown Organization',
+              organizationName: t.tenantName || t.organisationName || 'Unknown Organization'
+            }));
+            
+            // Save to new column
+            await db.query(
+              'UPDATE xero_settings SET authorized_tenants = $1 WHERE company_id = $2',
+              [JSON.stringify(tenants), companyId]
+            );
+            console.log(`📦 Migrated ${tenants.length} tenants from tenant_data to authorized_tenants`);
+          }
+        }
+      } catch (oldParseError) {
+        console.log('⚠️ Error parsing tenant_data:', oldParseError.message);
+      }
+    }
+
+    // If still no tenants and we have a token, fetch from Xero API
+    if ((!tenants || tenants.length === 0) && settings.access_token) {
+      console.log('🔄 No tenants in database, fetching from Xero API...');
+      try {
+        const tenantsResponse = await axios.get('https://api.xero.com/connections', {
+          headers: { 
+            Authorization: `Bearer ${settings.access_token}`, 
+            'Content-Type': 'application/json' 
+          }
+        });
+
+        if (tenantsResponse.data && tenantsResponse.data.length > 0) {
+          tenants = tenantsResponse.data.map(conn => ({
+            id: conn.tenantId,
+            tenantId: conn.tenantId,
+            name: conn.tenantName || 'Unknown Organization',
+            tenantName: conn.tenantName || 'Unknown Organization',
+            organizationName: conn.tenantName || 'Unknown Organization',
+            connectionId: conn.id
+          }));
+
+          // Save to database
+          await db.query(
+            'UPDATE xero_settings SET authorized_tenants = $1 WHERE company_id = $2',
+            [JSON.stringify(tenants), companyId]
+          );
+          
+          console.log(`✅ Fetched and saved ${tenants.length} tenants from Xero API`);
+        }
+      } catch (apiError) {
+        console.error('❌ Failed to fetch tenants from Xero API:', apiError.message);
+        
+        // If API call fails, return empty but don't error out
+        return res.json({
+          success: true,
+          data: [],
+          message: 'No organizations found. Please reconnect to Xero.',
+          needsReconnection: true
+        });
+      }
+    }
+
+    // Return tenants in standardized format
     res.json({
       success: true,
       data: tenants.map(t => ({
-        tenantId: t.tenantId,
-        tenantName: t.tenantName,
-        organisationName: t.organisationName,
-        tenantType: t.tenantType
-      }))
+        id: t.id || t.tenantId,
+        tenantId: t.tenantId || t.id,
+        name: t.name || t.tenantName || t.organizationName || 'Unknown Organization',
+        tenantName: t.tenantName || t.name || 'Unknown Organization',
+        organisationName: t.organizationName || t.name || 'Unknown Organization',
+        organizationName: t.organizationName || t.name || 'Unknown Organization'
+      })),
+      message: `Retrieved ${tenants.length} Xero organization(s)`
     });
 
   } catch (error) {
     console.error('❌ Get Tenants Error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to get tenants',
+      message: 'Failed to get Xero organizations',
       error: error.message
     });
   }
@@ -1074,6 +1178,7 @@ const disconnect = async (req, res) => {
         token_expires_at = NULL,
         xero_user_id = NULL,
         tenant_data = NULL,
+        authorized_tenants = NULL,
         updated_at = NOW()
       WHERE company_id = $1
     `, [companyId]);
