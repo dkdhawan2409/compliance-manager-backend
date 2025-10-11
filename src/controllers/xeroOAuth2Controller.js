@@ -601,6 +601,9 @@ const getConnectionStatus = async (req, res) => {
           }
         });
 
+        console.log('📋 Xero API response status:', tenantsResponse.status);
+        console.log('📋 Xero API response data:', tenantsResponse.data);
+
         if (tenantsResponse.data && tenantsResponse.data.length > 0) {
           tenants = tenantsResponse.data.map(conn => ({
             id: conn.tenantId,
@@ -618,10 +621,22 @@ const getConnectionStatus = async (req, res) => {
           );
           
           console.log(`✅ Fetched and saved ${tenants.length} tenants from Xero API in connection status`);
+        } else {
+          console.log('⚠️ Xero API returned empty tenants array - user may not have any organizations');
         }
       } catch (apiError) {
-        console.error('❌ Failed to fetch tenants from Xero API in connection status:', apiError.message);
-        // Don't fail the entire request if tenant fetch fails
+        console.error('❌ Failed to fetch tenants from Xero API in connection status:', {
+          message: apiError.message,
+          status: apiError.response?.status,
+          statusText: apiError.response?.statusText,
+          data: apiError.response?.data
+        });
+        
+        // If it's a 401/403 error, the token might actually be invalid
+        if (apiError.response?.status === 401 || apiError.response?.status === 403) {
+          console.log('🔑 Token appears to be invalid despite validation check - marking as invalid');
+          isTokenValid = false;
+        }
       }
     }
 
@@ -667,6 +682,12 @@ const getConnectionStatus = async (req, res) => {
         hasExpiredTokens: hasTokens && !isTokenValid, // Has tokens but they're expired
         hasCredentials: hasCredentials,
         needsOAuth: hasCredentials && !hasTokens, // Has credentials but no tokens yet
+        // Add helpful message when no tenants found
+        message: tenants.length === 0 && isTokenValid 
+          ? "Connected to Xero but no organizations found. Please check your Xero account has organizations or reconnect to refresh the connection."
+          : tenants.length === 0 && !isTokenValid
+          ? "Xero connection expired. Please reconnect to refresh your access."
+          : undefined,
         timestamp: new Date().toISOString(), // Add timestamp for debugging
         // Add debug info
         debug: {
