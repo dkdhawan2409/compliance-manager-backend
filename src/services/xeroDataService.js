@@ -69,8 +69,15 @@ class XeroDataService {
             retryOnUnauthorized: false
           });
         } catch (refreshError) {
-          console.error(`❌ Failed to refresh Xero token for company ${companyId}:`, refreshError.message);
-          throw new Error('Xero token expired. Please reconnect to Xero.');
+          const refreshStatus = refreshError.response?.status;
+          const refreshData = refreshError.response?.data;
+          const refreshMessage = refreshError.message || 'Xero token expired. Please reconnect to Xero.';
+          console.error(`❌ Failed to refresh Xero token for company ${companyId}:`, {
+            message: refreshMessage,
+            status: refreshStatus,
+            data: refreshData
+          });
+          throw new Error(refreshMessage);
         }
       }
 

@@ -337,7 +337,32 @@ class XeroAuthService {
       };
 
     } catch (error) {
-      console.error('❌ Error refreshing token:', error);
+      const status = error.response?.status;
+      const errorData = error.response?.data;
+
+      console.error('❌ Error refreshing token:', {
+        companyId,
+        status,
+        data: errorData,
+        message: error.message
+      });
+
+      if (status === 400) {
+        const errorCode = errorData?.error;
+        const description = errorData?.error_description || errorData?.message;
+
+        if (errorCode === 'invalid_grant' || (typeof description === 'string' && description.toLowerCase().includes('invalid_grant'))) {
+          console.warn(`⚠️  Xero refresh token invalid for company ${companyId}. Marking connection as expired.`);
+          await this.invalidateConnectionTokens(companyId, 'expired');
+          throw new Error('Xero authorization expired. Please reconnect to Xero.');
+        }
+
+        if (errorCode === 'invalid_client') {
+          console.error(`❌ Xero client credentials invalid for company ${companyId}.`);
+          throw new Error('Xero client credentials invalid. Please update Client ID and Client Secret.');
+        }
+      }
+
       throw error;
     }
   }
@@ -376,6 +401,24 @@ class XeroAuthService {
       console.error('❌ Error getting valid token:', error);
       throw error;
     }
+  }
+
+  /**
+   * Invalidate stored tokens for a company (used when refresh token revoked/expired)
+   * @param {number} companyId
+   * @param {string} status
+   */
+  async invalidateConnectionTokens(companyId, status = 'expired') {
+    await db.query(`
+      UPDATE xero_connections
+      SET 
+        access_token_encrypted = NULL,
+        refresh_token_encrypted = NULL,
+        access_token_expires_at = NULL,
+        status = $2,
+        updated_at = NOW()
+      WHERE company_id = $1
+    `, [companyId, status]);
   }
 
   /**

@@ -160,6 +160,9 @@ class XeroController {
       if (error.message.includes('token expired')) {
         statusCode = 401;
         message = 'Xero connection expired. Please reconnect to Xero.';
+      } else if (error.message.includes('authorization expired') || error.message.includes('refresh token invalid')) {
+        statusCode = 401;
+        message = 'Xero authorization expired. Please reconnect to Xero.';
       } else if (error.message.includes('Access denied')) {
         statusCode = 403;
         message = 'Access denied to Xero organization. Please check your permissions.';
