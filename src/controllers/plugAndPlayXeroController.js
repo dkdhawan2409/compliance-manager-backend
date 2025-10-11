@@ -172,18 +172,40 @@ class PlugAndPlayXeroController {
       );
 
       let settings;
+      const now = new Date();
       if (existingResult.rows.length > 0) {
-        // Update existing settings
+        // Update existing settings and clear stale tokens/tenant selections
         const updateResult = await db.query(
-          'UPDATE xero_settings SET client_id = $1, client_secret = $2, redirect_uri = $3, updated_at = NOW() WHERE company_id = $4 RETURNING *',
-          [clientId, encryptedClientSecret, redirectUri, companyId]
+          `UPDATE xero_settings
+             SET client_id = $1,
+                 client_secret = $2,
+                 redirect_uri = $3,
+                 access_token = NULL,
+                 refresh_token = NULL,
+                 token_expires_at = NULL,
+                 tenant_id = NULL,
+                 organization_name = NULL,
+                 tenant_data = NULL,
+                 updated_at = $4
+           WHERE company_id = $5
+           RETURNING *`,
+          [clientId, encryptedClientSecret, redirectUri, now, companyId]
         );
         settings = updateResult.rows[0];
       } else {
         // Insert new settings
         const insertResult = await db.query(
-          'INSERT INTO xero_settings (company_id, client_id, client_secret, redirect_uri, created_at, updated_at) VALUES ($1, $2, $3, $4, NOW(), NOW()) RETURNING *',
-          [companyId, clientId, encryptedClientSecret, redirectUri]
+          `INSERT INTO xero_settings (
+             company_id,
+             client_id,
+             client_secret,
+             redirect_uri,
+             created_at,
+             updated_at
+           )
+           VALUES ($1, $2, $3, $4, $5, $5)
+           RETURNING *`,
+          [companyId, clientId, encryptedClientSecret, redirectUri, now]
         );
         settings = insertResult.rows[0];
       }
