@@ -6,6 +6,9 @@ const axios = require('axios');
 const crypto = require('crypto-js');
 const db = require('../config/database');
 
+const XERO_SETTINGS_VIEW = process.env.XERO_SETTINGS_VIEW || 'xero_settings';
+const XERO_SETTINGS_TABLE = process.env.XERO_SETTINGS_TABLE || 'plug_and_play_xero_settings';
+
 class PlugAndPlayXeroController {
   constructor() {
     this.xeroApiBaseUrl = process.env.XERO_API_BASE_URL || 'https://api.xero.com';
@@ -60,8 +63,8 @@ class PlugAndPlayXeroController {
     try {
       const companyId = req.company.id;
       
-      const result = await db.query(
-        `SELECT 
+      const settingsQuery = `
+        SELECT 
           id,
           company_id,
           client_id,
@@ -75,10 +78,11 @@ class PlugAndPlayXeroController {
           tenant_data,
           created_at,
           updated_at
-        FROM xero_settings 
-        WHERE company_id = $1`,
-        [companyId]
-      );
+        FROM ${XERO_SETTINGS_VIEW}
+        WHERE company_id = $1
+      `;
+
+      const result = await db.query(settingsQuery, [companyId]);
 
       const settings = result.rows.length > 0 ? result.rows[0] : null;
 
@@ -167,7 +171,7 @@ class PlugAndPlayXeroController {
 
       // Check if settings already exist
       const existingResult = await db.query(
-        'SELECT id FROM xero_settings WHERE company_id = $1',
+        `SELECT id FROM ${XERO_SETTINGS_VIEW} WHERE company_id = $1`,
         [companyId]
       );
 
@@ -176,7 +180,7 @@ class PlugAndPlayXeroController {
       if (existingResult.rows.length > 0) {
         // Update existing settings and clear stale tokens/tenant selections
         const updateResult = await db.query(
-          `UPDATE xero_settings
+          `UPDATE ${XERO_SETTINGS_TABLE}
              SET client_id = $1,
                  client_secret = $2,
                  redirect_uri = $3,
@@ -195,7 +199,7 @@ class PlugAndPlayXeroController {
       } else {
         // Insert new settings
         const insertResult = await db.query(
-          `INSERT INTO xero_settings (
+          `INSERT INTO ${XERO_SETTINGS_TABLE} (
              company_id,
              client_id,
              client_secret,
@@ -238,7 +242,7 @@ class PlugAndPlayXeroController {
       const companyId = req.company.id;
 
       const result = await db.query(
-        'DELETE FROM xero_settings WHERE company_id = $1',
+        `DELETE FROM ${XERO_SETTINGS_TABLE} WHERE company_id = $1`,
         [companyId]
       );
 
@@ -270,7 +274,7 @@ class PlugAndPlayXeroController {
       const companyId = req.company.id;
 
       const result = await db.query(
-        'UPDATE xero_settings SET access_token = NULL, refresh_token = NULL, token_expires_at = NULL, tenant_id = NULL, organization_name = NULL, tenant_data = NULL, updated_at = NOW() WHERE company_id = $1',
+        `UPDATE ${XERO_SETTINGS_TABLE} SET access_token = NULL, refresh_token = NULL, token_expires_at = NULL, tenant_id = NULL, organization_name = NULL, tenant_data = NULL, updated_at = NOW() WHERE company_id = $1`,
         [companyId]
       );
 
@@ -332,7 +336,7 @@ class PlugAndPlayXeroController {
 
       // Get company-specific Xero settings from database (same as existing Xero integration)
       const result = await db.query(
-        'SELECT client_id, client_secret, redirect_uri FROM xero_settings WHERE company_id = $1',
+        `SELECT client_id, client_secret, redirect_uri FROM ${XERO_SETTINGS_VIEW} WHERE company_id = $1`,
         [companyId]
       );
 
@@ -521,7 +525,7 @@ class PlugAndPlayXeroController {
 
       // Get company-specific Xero settings from database (same as existing Xero integration)
       const settingsResult = await db.query(
-        'SELECT client_id, client_secret, redirect_uri FROM xero_settings WHERE company_id = $1',
+        `SELECT client_id, client_secret, redirect_uri FROM ${XERO_SETTINGS_VIEW} WHERE company_id = $1`,
         [companyId]
       );
 
@@ -596,7 +600,7 @@ class PlugAndPlayXeroController {
 
       // Save tokens to database (same approach as existing Xero integration)
       await db.query(
-        'UPDATE xero_settings SET access_token = $1, refresh_token = $2, token_expires_at = $3, tenant_id = $4, organization_name = $5, tenant_data = $6, updated_at = CURRENT_TIMESTAMP WHERE company_id = $7',
+        `UPDATE ${XERO_SETTINGS_TABLE} SET access_token = $1, refresh_token = $2, token_expires_at = $3, tenant_id = $4, organization_name = $5, tenant_data = $6, updated_at = CURRENT_TIMESTAMP WHERE company_id = $7`,
         [
           this.encrypt(access_token),
           this.encrypt(refresh_token),
@@ -704,7 +708,7 @@ class PlugAndPlayXeroController {
       console.log('🔄 Refreshing access token for company:', companyId);
       
       const result = await db.query(
-        'SELECT refresh_token, client_id, client_secret FROM xero_settings WHERE company_id = $1',
+        `SELECT refresh_token, client_id, client_secret FROM ${XERO_SETTINGS_VIEW} WHERE company_id = $1`,
         [companyId]
       );
       const settings = result.rows[0];
@@ -745,7 +749,7 @@ class PlugAndPlayXeroController {
 
       // Update tokens in database
       await db.query(
-        'UPDATE xero_settings SET access_token = $1, refresh_token = $2, token_expires_at = $3, updated_at = CURRENT_TIMESTAMP WHERE company_id = $4',
+        `UPDATE ${XERO_SETTINGS_TABLE} SET access_token = $1, refresh_token = $2, token_expires_at = $3, updated_at = CURRENT_TIMESTAMP WHERE company_id = $4`,
         [
           this.encrypt(access_token),
           this.encrypt(new_refresh_token),
@@ -795,7 +799,7 @@ class PlugAndPlayXeroController {
       }
 
       const result = await db.query(
-        'SELECT access_token, token_expires_at, tenant_id, tenant_data FROM xero_settings WHERE company_id = $1',
+        `SELECT access_token, token_expires_at, tenant_id, tenant_data FROM ${XERO_SETTINGS_VIEW} WHERE company_id = $1`,
         [companyId]
       );
       const settings = result.rows[0];
@@ -846,7 +850,7 @@ class PlugAndPlayXeroController {
           await this.refreshAccessTokenInternal(companyId);
           // Reload settings after refresh
           const refreshedResult = await db.query(
-            'SELECT access_token, tenant_id, tenant_data FROM xero_settings WHERE company_id = $1',
+            `SELECT access_token, tenant_id, tenant_data FROM ${XERO_SETTINGS_VIEW} WHERE company_id = $1`,
             [companyId]
           );
           const refreshedSettings = refreshedResult.rows[0];
@@ -1396,7 +1400,7 @@ class PlugAndPlayXeroController {
             ELSE false 
           END as has_valid_tokens
         FROM companies c
-        LEFT JOIN xero_settings xs ON c.id = xs.company_id
+        LEFT JOIN ${XERO_SETTINGS_VIEW} xs ON c.id = xs.company_id
         WHERE c.is_active = true
         ORDER BY c.name
       `);
@@ -1500,7 +1504,7 @@ class PlugAndPlayXeroController {
 async function getConnectionStatusInternal(companyId) {
   try {
     const result = await db.query(
-      'SELECT client_id, client_secret, redirect_uri, access_token, refresh_token, token_expires_at, tenant_id, organization_name, tenant_data, updated_at FROM xero_settings WHERE company_id = $1',
+      `SELECT client_id, client_secret, redirect_uri, access_token, refresh_token, token_expires_at, tenant_id, organization_name, tenant_data, updated_at FROM ${XERO_SETTINGS_VIEW} WHERE company_id = $1`,
       [companyId]
     );
 

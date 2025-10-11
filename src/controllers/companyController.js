@@ -4,6 +4,9 @@ const { generateToken } = require('../utils/jwt');
 const { complianceDetailsSchema } = require('../utils/validation');
 const plugAndPlayXeroController = require('./plugAndPlayXeroController');
 
+const XERO_SETTINGS_TABLE = process.env.XERO_SETTINGS_TABLE || 'plug_and_play_xero_settings';
+const XERO_SETTINGS_VIEW = process.env.XERO_SETTINGS_VIEW || 'xero_settings';
+
 // Internal helper to upsert Xero OAuth credentials for a company
 const upsertCompanyXeroCredentials = async (companyId, { clientId, clientSecret, redirectUri }) => {
   if (!clientId || !clientSecret || !redirectUri) {
@@ -22,20 +25,32 @@ const upsertCompanyXeroCredentials = async (companyId, { clientId, clientSecret,
   const timestamp = new Date();
 
   const query = `
-    INSERT INTO xero_oauth_settings (
+    INSERT INTO ${XERO_SETTINGS_TABLE} (
       company_id,
       client_id,
       client_secret,
       redirect_uri,
+      access_token,
+      refresh_token,
+      token_expires_at,
+      tenant_id,
+      organization_name,
+      tenant_data,
       created_at,
       updated_at
     )
-    VALUES ($1, $2, $3, $4, $5, $5)
+    VALUES ($1, $2, $3, $4, NULL, NULL, NULL, NULL, NULL, NULL, $5, $5)
     ON CONFLICT (company_id)
     DO UPDATE SET
       client_id = EXCLUDED.client_id,
       client_secret = EXCLUDED.client_secret,
       redirect_uri = EXCLUDED.redirect_uri,
+      access_token = NULL,
+      refresh_token = NULL,
+      token_expires_at = NULL,
+      tenant_id = NULL,
+      organization_name = NULL,
+      tenant_data = NULL,
       updated_at = $5
     RETURNING *
   `;
@@ -532,7 +547,7 @@ const getAllCompaniesWithXeroSettings = async (req, res, next) => {
         xs.created_at as xero_created_at,
         xs.updated_at as xero_updated_at
       FROM companies c
-      LEFT JOIN xero_settings xs ON c.id = xs.company_id
+      LEFT JOIN ${XERO_SETTINGS_VIEW} xs ON c.id = xs.company_id
       WHERE c.role != 'superadmin'
       ORDER BY c.created_at DESC
       LIMIT $1 OFFSET $2
