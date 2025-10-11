@@ -9,6 +9,72 @@ const XeroSettings = require('../models/XeroSettings');
 class XeroDataService {
   
   /**
+   * Validate that a company has access to a specific tenant
+   * @param {number} companyId - Company ID
+   * @param {string} requestedTenantId - Tenant ID to validate
+   * @returns {Promise<string>} Validated tenant ID
+   */
+  async validateTenantAccess(companyId, requestedTenantId) {
+    try {
+      const settings = await XeroSettings.getSettings(companyId);
+      
+      if (!settings) {
+        throw new Error('No Xero settings found. Please connect to Xero first.');
+      }
+      
+      // Get authorized tenants
+      let authorizedTenants = [];
+      if (settings.authorized_tenants && settings.authorized_tenants.length > 0) {
+        authorizedTenants = settings.authorized_tenants;
+      } else if (settings.tenant_data) {
+        // Fallback to old tenant_data format
+        try {
+          authorizedTenants = JSON.parse(settings.tenant_data);
+          if (!Array.isArray(authorizedTenants)) {
+            authorizedTenants = [authorizedTenants];
+          }
+        } catch (error) {
+          console.log('⚠️  Could not parse tenant_data, using empty array');
+          authorizedTenants = [];
+        }
+      }
+      
+      // If no requested tenant ID, use the first authorized tenant
+      if (!requestedTenantId) {
+        if (authorizedTenants.length === 0) {
+          throw new Error('No Xero organizations found. Please reconnect to Xero.');
+        }
+        const firstTenant = authorizedTenants[0];
+        console.log(`📋 No tenant ID specified, using first authorized tenant: ${firstTenant.name || firstTenant.tenantName}`);
+        return firstTenant.tenantId || firstTenant.id;
+      }
+      
+      // Find the requested tenant in authorized tenants
+      const authorizedTenant = authorizedTenants.find(tenant => 
+        tenant.tenantId === requestedTenantId || 
+        tenant.id === requestedTenantId
+      );
+      
+      if (!authorizedTenant) {
+        console.log(`⚠️  Requested tenant ${requestedTenantId} not found in authorized tenants`);
+        if (authorizedTenants.length > 0) {
+          const fallbackTenant = authorizedTenants[0];
+          console.log(`📋 Falling back to first authorized tenant: ${fallbackTenant.name || fallbackTenant.tenantName}`);
+          return fallbackTenant.tenantId || fallbackTenant.id;
+        }
+        throw new Error(`Tenant ${requestedTenantId} is not authorized for this company.`);
+      }
+      
+      console.log(`✅ Validated tenant access: ${authorizedTenant.name || authorizedTenant.tenantName}`);
+      return authorizedTenant.tenantId || authorizedTenant.id;
+      
+    } catch (error) {
+      console.error('❌ Error validating tenant access:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Get valid Xero token for a company, auto-refresh if expired
    * @param {number} companyId - Company ID
    * @returns {Promise<Object>} Token object with accessToken, refreshToken, tenantId

@@ -16,9 +16,12 @@ class FASController {
   async getFASData(req, res) {
     try {
       const companyId = req.company.id;
-      const { fromDate, toDate, useCache = true } = req.query;
+      const { fromDate, toDate, useCache = true, tenantId } = req.query;
       
-      console.log(`📊 Getting FAS data for company ${companyId}`);
+      console.log(`📊 Getting FAS data for company ${companyId}, tenant: ${tenantId || 'default'}`);
+      
+      // Validate tenant access
+      const validatedTenantId = await xeroDataService.validateTenantAccess(companyId, tenantId);
       
       // Get valid Xero token
       const token = await xeroDataService.getValidToken(companyId);
@@ -26,7 +29,7 @@ class FASController {
       // Check cache first if requested
       let fasData = null;
       if (useCache === 'true') {
-        const cachedData = await xeroDataService.getCachedData(companyId, token.tenantId, 'fas_data');
+        const cachedData = await xeroDataService.getCachedData(companyId, validatedTenantId, 'fas_data');
         if (cachedData) {
           console.log('✅ Using cached FAS data');
           return res.json({
@@ -41,13 +44,13 @@ class FASController {
       
       // Fetch fresh data from Xero (FAS is typically calculated from employee benefits)
       console.log('🔄 Fetching FAS data from Xero...');
-      fasData = await this.fetchFASDataFromXero(token.accessToken, token.tenantId, {
+      fasData = await this.fetchFASDataFromXero(token.accessToken, validatedTenantId, {
         fromDate,
         toDate
       });
       
       // Cache the data for future requests
-      await xeroDataService.cacheData(companyId, token.tenantId, 'fas_data', fasData, 2); // Cache for 2 hours
+      await xeroDataService.cacheData(companyId, validatedTenantId, 'fas_data', fasData, 2); // Cache for 2 hours
       
       res.json({
         success: true,
@@ -64,7 +67,8 @@ class FASController {
         return res.status(401).json({
           success: false,
           error: 'XERO_TOKEN_EXPIRED',
-          message: 'Xero connection expired. Please reconnect to Xero.',
+          message: 'Xero connection expired. Please reconnect to Xero to refresh your access.',
+          action: 'Please go to the Xero Flow page and click "Connect to Xero" again.',
           requiresReconnection: true
         });
       }
@@ -73,8 +77,29 @@ class FASController {
         return res.status(400).json({
           success: false,
           error: 'XERO_NOT_CONFIGURED',
-          message: 'Xero is not configured. Please connect to Xero first.',
+          message: 'Xero is not connected. Please connect to Xero first.',
+          action: 'Go to the Xero Flow page and click "Connect to Xero" to authorize access.',
           requiresConfiguration: true
+        });
+      }
+      
+      if (error.message.includes('not authorized for this company')) {
+        return res.status(403).json({
+          success: false,
+          error: 'TENANT_NOT_AUTHORIZED',
+          message: 'You do not have access to this Xero organization.',
+          action: 'Please select a different organization or reconnect to Xero.',
+          requiresReconnection: true
+        });
+      }
+      
+      if (error.message.includes('No Xero organizations found')) {
+        return res.status(400).json({
+          success: false,
+          error: 'NO_ORGANIZATIONS',
+          message: 'No Xero organizations found. Please reconnect to Xero.',
+          action: 'Go to the Xero Flow page and click "Connect to Xero" to authorize access.',
+          requiresReconnection: true
         });
       }
       
