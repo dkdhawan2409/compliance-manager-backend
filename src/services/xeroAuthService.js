@@ -4,6 +4,13 @@ const CryptoJS = require('crypto-js');
 const db = require('../config/database');
 
 const TOKEN_ENCRYPTION_KEY = process.env.XERO_TOKEN_ENCRYPTION_KEY || 'default-encryption-key-change-in-production-32-chars';
+const FALLBACK_SETTINGS_VIEWS = Array.from(new Set(
+  [
+    process.env.XERO_SETTINGS_VIEW,
+    'plug_and_play_xero_settings',
+    'xero_settings'
+  ].filter(Boolean)
+));
 
 /**
  * Convert an object of key/value pairs to URL-encoded form data.
@@ -422,6 +429,58 @@ class XeroAuthService {
   }
 
   /**
+   * Retrieve company connection details with fallback to compatibility views
+   * @param {number} companyId
+   * @returns {Promise<{authorizedTenants: Array, tenantId: string|null, source: string}|null>}
+   */
+  async getCompanyConnectionRecord(companyId) {
+    // Primary source: xero_connections
+    const primary = await db.query(
+      'SELECT authorized_tenants, tenant_id FROM xero_connections WHERE company_id = $1',
+      [companyId]
+    );
+
+    if (primary.rows.length > 0) {
+      const row = primary.rows[0];
+      return {
+        authorizedTenants: parseTenants(row.authorized_tenants),
+        tenantId: row.tenant_id || null,
+        source: 'xero_connections'
+      };
+    }
+
+    // Fallback sources: configured views (if present)
+    for (const viewName of FALLBACK_SETTINGS_VIEWS) {
+      if (!/^[a-zA-Z0-9_]+$/.test(viewName)) {
+        console.warn(`⚠️  Skipping unsafe Xero settings view name: ${viewName}`);
+        continue;
+      }
+
+      try {
+        const fallback = await db.query(
+          `SELECT COALESCE(authorized_tenants, tenant_data) AS tenants, tenant_id FROM ${viewName} WHERE company_id = $1`,
+          [companyId]
+        );
+
+        if (fallback.rows.length > 0) {
+          const row = fallback.rows[0];
+          return {
+            authorizedTenants: parseTenants(row.tenants),
+            tenantId: row.tenant_id || null,
+            source: viewName
+          };
+        }
+      } catch (fallbackError) {
+        if (fallbackError.code !== '42P01') {
+          console.warn(`⚠️  Failed to query fallback Xero settings view "${viewName}":`, fallbackError.message);
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
    * Validate tenant access
    * @param {number} companyId - Company ID
    * @param {string} requestedTenantId - Tenant ID to validate
@@ -429,24 +488,22 @@ class XeroAuthService {
    */
   async validateTenantAccess(companyId, requestedTenantId) {
     try {
-      const result = await db.query(
-        'SELECT authorized_tenants FROM xero_connections WHERE company_id = $1',
-        [companyId]
-      );
+      const connection = await this.getCompanyConnectionRecord(companyId);
 
-      if (result.rows.length === 0) {
+      if (!connection) {
         throw new Error('No Xero connection found');
       }
 
-      const authorizedTenants = result.rows[0].authorized_tenants || [];
+      const authorizedTenants = connection.authorizedTenants;
 
-      if (authorizedTenants.length === 0) {
+      if (!authorizedTenants || authorizedTenants.length === 0) {
         throw new Error('No authorized tenants found. Please reconnect to Xero.');
       }
 
       // If no tenant specified, use first authorized tenant
       if (!requestedTenantId) {
-        return authorizedTenants[0].tenantId || authorizedTenants[0].id;
+        const fallbackTenant = authorizedTenants[0];
+        return fallbackTenant?.tenantId || fallbackTenant?.id || connection.tenantId;
       }
 
       // Find requested tenant
@@ -456,7 +513,8 @@ class XeroAuthService {
 
       if (!authorizedTenant) {
         console.log(`⚠️  Tenant ${requestedTenantId} not found, falling back to first authorized tenant`);
-        return authorizedTenants[0].tenantId || authorizedTenants[0].id;
+        const fallbackTenant = authorizedTenants[0];
+        return fallbackTenant?.tenantId || fallbackTenant?.id || connection.tenantId;
       }
 
       return requestedTenantId;
@@ -567,5 +625,37 @@ class XeroAuthService {
     }
   }
 }
+
+/**
+ * Normalize authorized tenants payload into an array
+ * @param {*} tenants
+ * @returns {Array}
+ */
+const parseTenants = (tenants) => {
+  if (!tenants) {
+    return [];
+  }
+
+  if (Array.isArray(tenants)) {
+    return tenants;
+  }
+
+  if (typeof tenants === 'string') {
+    try {
+      const parsed = JSON.parse(tenants);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+      console.warn('⚠️  Failed to parse authorized tenants string:', error.message);
+      return [];
+    }
+  }
+
+  if (typeof tenants === 'object') {
+    const values = Object.values(tenants);
+    return values.every(item => typeof item === 'object') ? values : [];
+  }
+
+  return [];
+};
 
 module.exports = new XeroAuthService();
