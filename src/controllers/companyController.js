@@ -486,12 +486,14 @@ const getAllCompaniesWithXeroSettings = async (req, res, next) => {
         c.updated_at,
         xs.id as xero_settings_id,
         xs.client_id,
+        xs.client_secret,
         xs.redirect_uri,
-        xs.username,
-        xs.password,
         xs.access_token,
         xs.refresh_token,
         xs.token_expires_at,
+        xs.tenant_id,
+        xs.organization_name,
+        xs.tenant_data,
         xs.created_at as xero_created_at,
         xs.updated_at as xero_updated_at
       FROM companies c
@@ -512,15 +514,30 @@ const getAllCompaniesWithXeroSettings = async (req, res, next) => {
       isActive: row.is_active,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
-      xeroSettings: row.xero_settings_id ? {
-        id: row.xero_settings_id,
-        clientId: row.client_id,
-        redirectUri: row.redirect_uri,
-        hasCredentials: !!(row.username && row.password),
-        hasTokens: !!(row.access_token && row.refresh_token),
-        createdAt: row.xero_created_at,
-        updatedAt: row.xero_updated_at
-      } : null
+      xeroSettings: row.xero_settings_id
+        ? {
+            id: row.xero_settings_id,
+            clientId: row.client_id,
+            redirectUri: row.redirect_uri,
+            hasCredentials: !!(row.client_id && row.client_secret && row.redirect_uri),
+            hasTokens: !!(row.access_token && row.refresh_token),
+            tokenExpiresAt: row.token_expires_at,
+            tenantId: row.tenant_id,
+            organizationName: row.organization_name,
+            tenants: (() => {
+              if (!row.tenant_data) return [];
+              try {
+                const parsed = JSON.parse(row.tenant_data);
+                return Array.isArray(parsed) ? parsed : [];
+              } catch (error) {
+                console.warn('⚠️ Failed to parse tenant_data for company', row.id, error.message);
+                return [];
+              }
+            })(),
+            createdAt: row.xero_created_at,
+            updatedAt: row.xero_updated_at
+          }
+        : null
     }));
 
     res.status(200).json({
@@ -557,4 +574,3 @@ module.exports = {
   getAllCompaniesWithXeroSettings, // Export new function
   assignXeroClientIdToAllCompanies, // Export bulk assignment function
 };
-

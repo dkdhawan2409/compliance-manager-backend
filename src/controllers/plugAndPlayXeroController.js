@@ -61,27 +61,78 @@ class PlugAndPlayXeroController {
       const companyId = req.company.id;
       
       const result = await db.query(
-        'SELECT id, company_id, client_id, client_secret, redirect_uri, created_at, updated_at FROM xero_settings WHERE company_id = $1',
+        `SELECT 
+          id,
+          company_id,
+          client_id,
+          client_secret,
+          redirect_uri,
+          access_token,
+          refresh_token,
+          token_expires_at,
+          tenant_id,
+          organization_name,
+          tenant_data,
+          created_at,
+          updated_at
+        FROM xero_settings 
+        WHERE company_id = $1`,
         [companyId]
       );
 
       const settings = result.rows.length > 0 ? result.rows[0] : null;
 
+      // Always compute connection status so the frontend receives consistent payloads
+      const connectionStatus = await getConnectionStatusInternal(companyId);
+
       if (!settings) {
-        return res.status(404).json({
-          success: false,
-          message: 'Xero settings not found for this company'
+        return res.json({
+          success: true,
+          message: 'Xero settings not configured for this company',
+          data: {
+            hasCredentials: false,
+            hasTokens: false,
+            hasClientSecret: false,
+            clientId: null,
+            redirectUri: null,
+            tenantId: null,
+            organizationName: null,
+            tenants: [],
+            tokenExpiresAt: null,
+            lastUpdated: null,
+            ...connectionStatus
+          }
         });
       }
 
-      // Get connection status
-      const connectionStatus = await getConnectionStatusInternal(companyId);
+      let tenants = [];
+      if (settings.tenant_data) {
+        try {
+          const parsed = JSON.parse(settings.tenant_data);
+          if (Array.isArray(parsed)) {
+            tenants = parsed;
+          }
+        } catch (error) {
+          console.warn('⚠️ Failed to parse tenant_data for company', companyId, error.message);
+        }
+      }
 
       res.json({
         success: true,
         message: 'Xero settings retrieved successfully',
         data: {
-          ...settings,
+          id: settings.id,
+          companyId: settings.company_id,
+          clientId: settings.client_id,
+          redirectUri: settings.redirect_uri,
+          hasClientSecret: !!settings.client_secret,
+          hasCredentials: !!(settings.client_id && settings.client_secret && settings.redirect_uri),
+          hasTokens: !!(settings.access_token && settings.refresh_token),
+          tenantId: settings.tenant_id,
+          organizationName: settings.organization_name,
+          tenants,
+          tokenExpiresAt: settings.token_expires_at,
+          lastUpdated: settings.updated_at,
           ...connectionStatus
         }
       });
