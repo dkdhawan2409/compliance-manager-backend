@@ -185,8 +185,8 @@ app.use('/api/cronjob-settings', cronjobSettingRoutes);
 app.use('/api/compliance-deadlines', complianceDeadlinesRoutes);
 app.use('/api/openai', openaiRoutes);
 app.use('/api/openai-admin', openaiSettingRoutes);
-// Proper OAuth2 Xero routes (main)
-app.use('/api/xero', xeroOAuth2Routes);
+// Unified Xero routes (main)
+app.use('/api/xero', xeroRoutes);
 // Plug-and-play Xero integration routes
 app.use('/api/xero-plug-play', plugAndPlayXeroRoutes);
 // Demo routes for testing data visibility (moved to different path to avoid conflicts)

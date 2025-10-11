@@ -1,668 +1,420 @@
 const axios = require('axios');
 const db = require('../config/database');
-const XeroSettings = require('../models/XeroSettings');
+const xeroAuthService = require('./xeroAuthService');
 
 /**
- * Xero Data Service - Centralized service for all Xero API calls
- * Handles token management, data fetching, and caching
+ * Xero Data Service - Unified Data Fetching and Caching
+ * Handles all Xero API calls, data caching, and organization-specific data fetching
  */
 class XeroDataService {
-  
+
+  constructor() {
+    this.baseUrl = 'https://api.xero.com';
+    this.cacheExpiry = {
+      'invoices': 15 * 60 * 1000, // 15 minutes
+      'contacts': 30 * 60 * 1000, // 30 minutes
+      'bas_data': 60 * 60 * 1000, // 1 hour
+      'fas_data': 60 * 60 * 1000, // 1 hour
+      'financial_summary': 30 * 60 * 1000, // 30 minutes
+      'dashboard_data': 15 * 60 * 1000 // 15 minutes
+    };
+  }
+
   /**
-   * Validate that a company has access to a specific tenant
-   * @param {number} companyId - Company ID
-   * @param {string} requestedTenantId - Tenant ID to validate
-   * @returns {Promise<string>} Validated tenant ID
+   * Fetch data from Xero API with automatic token refresh
+   * @param {string} endpoint - API endpoint
+   * @param {string} accessToken - Access token
+   * @param {string} tenantId - Tenant ID
+   * @param {Object} params - Query parameters
+   * @returns {Promise<Object>} API response
    */
-  async validateTenantAccess(companyId, requestedTenantId) {
+  async fetchFromXero(endpoint, accessToken, tenantId, params = {}) {
     try {
-      const settings = await XeroSettings.getSettings(companyId);
+      console.log(`📡 Fetching from Xero API: ${endpoint} for tenant ${tenantId}`);
+
+      const url = `${this.baseUrl}${endpoint}`;
+      const config = {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Xero-tenant-id': tenantId,
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+        params
+      };
+
+      const response = await axios.get(url, config);
       
-      if (!settings) {
-        throw new Error('No Xero settings found. Please connect to Xero first.');
-      }
-      
-      // Get authorized tenants
-      let authorizedTenants = [];
-      if (settings.authorized_tenants && settings.authorized_tenants.length > 0) {
-        authorizedTenants = settings.authorized_tenants;
-      } else if (settings.tenant_data) {
-        // Fallback to old tenant_data format
-        try {
-          authorizedTenants = JSON.parse(settings.tenant_data);
-          if (!Array.isArray(authorizedTenants)) {
-            authorizedTenants = [authorizedTenants];
-          }
-        } catch (error) {
-          console.log('⚠️  Could not parse tenant_data, using empty array');
-          authorizedTenants = [];
-        }
-      }
-      
-      // If no requested tenant ID, use the first authorized tenant
-      if (!requestedTenantId) {
-        if (authorizedTenants.length === 0) {
-          throw new Error('No Xero organizations found. Please reconnect to Xero.');
-        }
-        const firstTenant = authorizedTenants[0];
-        console.log(`📋 No tenant ID specified, using first authorized tenant: ${firstTenant.name || firstTenant.tenantName}`);
-        return firstTenant.tenantId || firstTenant.id;
-      }
-      
-      // Find the requested tenant in authorized tenants
-      const authorizedTenant = authorizedTenants.find(tenant => 
-        tenant.tenantId === requestedTenantId || 
-        tenant.id === requestedTenantId
-      );
-      
-      if (!authorizedTenant) {
-        console.log(`⚠️  Requested tenant ${requestedTenantId} not found in authorized tenants`);
-        if (authorizedTenants.length > 0) {
-          const fallbackTenant = authorizedTenants[0];
-          console.log(`📋 Falling back to first authorized tenant: ${fallbackTenant.name || fallbackTenant.tenantName}`);
-          return fallbackTenant.tenantId || fallbackTenant.id;
-        }
-        throw new Error(`Tenant ${requestedTenantId} is not authorized for this company.`);
-      }
-      
-      console.log(`✅ Validated tenant access: ${authorizedTenant.name || authorizedTenant.tenantName}`);
-      return authorizedTenant.tenantId || authorizedTenant.id;
-      
+      console.log(`✅ Successfully fetched from Xero API: ${endpoint}`);
+      return response.data;
+
     } catch (error) {
-      console.error('❌ Error validating tenant access:', error);
+      console.error(`❌ Error fetching from Xero API (${endpoint}):`, {
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        data: error.response?.data,
+        message: error.message
+      });
+
+      if (error.response?.status === 401) {
+        throw new Error('Xero token expired. Please reconnect to Xero.');
+      }
+
+      if (error.response?.status === 403) {
+        throw new Error('Access denied to Xero organization. Please check your permissions.');
+      }
+
       throw error;
     }
   }
 
   /**
-   * Get valid Xero token for a company, auto-refresh if expired
+   * Get cached data
    * @param {number} companyId - Company ID
-   * @returns {Promise<Object>} Token object with accessToken, refreshToken, tenantId
-   */
-  async getValidToken(companyId) {
-    try {
-      const settings = await XeroSettings.getSettings(companyId);
-      
-      if (!settings || !settings.access_token) {
-        throw new Error('No Xero token found. Please connect to Xero first.');
-      }
-      
-      // Check if token is expired
-      if (this.isTokenExpired(settings.token_expires_at)) {
-        console.log('🔄 Xero token expired, refreshing...');
-        return await this.refreshToken(companyId, settings);
-      }
-      
-      return {
-        accessToken: settings.access_token,
-        refreshToken: settings.refresh_token,
-        tenantId: settings.tenant_id,
-        organizationName: settings.organization_name
-      };
-      
-    } catch (error) {
-      console.error('❌ Error getting valid token:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * Refresh Xero access token
-   * @param {number} companyId - Company ID
-   * @param {Object} settings - Current Xero settings
-   * @returns {Promise<Object>} New token object
-   */
-  async refreshToken(companyId, settings) {
-    try {
-      const params = new URLSearchParams({
-        grant_type: 'refresh_token',
-        refresh_token: settings.refresh_token,
-        client_id: process.env.XERO_CLIENT_ID,
-        client_secret: process.env.XERO_CLIENT_SECRET
-      });
-      
-      const response = await axios.post('https://identity.xero.com/connect/token', params, {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
-      });
-      
-      const tokens = {
-        accessToken: response.data.access_token,
-        refreshToken: response.data.refresh_token,
-        expiresIn: response.data.expires_in
-      };
-      
-      // Update database with new tokens
-      await db.query(`
-        UPDATE xero_settings 
-        SET access_token = $1, 
-            refresh_token = $2, 
-            token_expires_at = $3,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE company_id = $4
-      `, [
-        tokens.accessToken,
-        tokens.refreshToken,
-        new Date(Date.now() + tokens.expiresIn * 1000),
-        companyId
-      ]);
-      
-      console.log('✅ Xero token refreshed successfully');
-      
-      return {
-        accessToken: tokens.accessToken,
-        refreshToken: tokens.refreshToken,
-        tenantId: settings.tenant_id,
-        organizationName: settings.organization_name
-      };
-      
-    } catch (error) {
-      console.error('❌ Error refreshing token:', error);
-      
-      // If refresh fails, clear tokens to force re-authentication
-      await db.query(`
-        UPDATE xero_settings 
-        SET access_token = NULL, 
-            refresh_token = NULL, 
-            token_expires_at = NULL,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE company_id = $1
-      `, [companyId]);
-      
-      throw new Error('Token refresh failed. Please reconnect to Xero.');
-    }
-  }
-  
-  /**
-   * Fetch organizations from Xero API
-   * @param {string} accessToken - Xero access token
-   * @param {string} tenantId - Xero tenant ID
-   * @returns {Promise<Object>} Organization data
-   */
-  async fetchOrganizations(accessToken, tenantId) {
-    try {
-      const response = await axios.get(`https://api.xero.com/api.xro/2.0/Organisation`, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Xero-tenant-id': tenantId,
-          'Accept': 'application/json'
-        }
-      });
-      
-      const organizations = response.data.Organisations || [];
-      return organizations.length > 0 ? organizations[0] : null;
-      
-    } catch (error) {
-      console.error('❌ Error fetching organizations:', error);
-      throw new Error(`Failed to fetch organizations: ${error.message}`);
-    }
-  }
-  
-  /**
-   * Fetch BAS/GST report from Xero
-   * @param {string} accessToken - Xero access token
-   * @param {string} tenantId - Xero tenant ID
-   * @param {Object} params - Report parameters
-   * @returns {Promise<Object>} BAS report data
-   */
-  async fetchBASReport(accessToken, tenantId, params = {}) {
-    try {
-      const { fromDate, toDate } = params;
-      
-      // Use Xero's Reports API for GST/BAS
-      const response = await axios.get(`https://api.xero.com/api.xro/2.0/Reports/GSTReport`, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Xero-tenant-id': tenantId,
-          'Accept': 'application/json'
-        },
-        params: {
-          fromDate: fromDate || this.getCurrentQuarterStart(),
-          toDate: toDate || this.getCurrentQuarterEnd()
-        }
-      });
-      
-      return response.data.Reports || [];
-      
-    } catch (error) {
-      console.error('❌ Error fetching BAS report:', error);
-      
-      // Fallback: try to get data from transactions if reports fail
-      console.log('🔄 Falling back to transaction-based BAS calculation...');
-      return await this.calculateBASFromTransactions(accessToken, tenantId, params);
-    }
-  }
-  
-  /**
-   * Fetch GST report (same as BAS in Australia)
-   * @param {string} accessToken - Xero access token
-   * @param {string} tenantId - Xero tenant ID
-   * @param {Object} params - Report parameters
-   * @returns {Promise<Object>} GST report data
-   */
-  async fetchGSTReport(accessToken, tenantId, params = {}) {
-    return await this.fetchBASReport(accessToken, tenantId, params);
-  }
-  
-  /**
-   * Calculate BAS from transactions (fallback method)
-   * @param {string} accessToken - Xero access token
-   * @param {string} tenantId - Xero tenant ID
-   * @param {Object} params - Report parameters
-   * @returns {Promise<Object>} Calculated BAS data
-   */
-  async calculateBASFromTransactions(accessToken, tenantId, params = {}) {
-    try {
-      const { fromDate, toDate } = params;
-      const startDate = fromDate || this.getCurrentQuarterStart();
-      const endDate = toDate || this.getCurrentQuarterEnd();
-      
-      // Get invoices and bills for the period
-      const [invoices, bills] = await Promise.all([
-        this.fetchInvoices(accessToken, tenantId, {
-          where: `Date >= DateTime(${startDate}) AND Date <= DateTime(${endDate})`,
-          statuses: 'AUTHORISED,PAID'
-        }),
-        this.fetchBills(accessToken, tenantId, {
-          where: `Date >= DateTime(${startDate}) AND Date <= DateTime(${endDate})`,
-          statuses: 'AUTHORISED,PAID'
-        })
-      ]);
-      
-      // Calculate GST components
-      const basData = this.calculateGSTComponents(invoices, bills);
-      
-      return [{
-        ReportName: 'GST Report (Calculated)',
-        ReportDate: new Date().toISOString().split('T')[0],
-        ReportID: 'calculated-bas',
-        ...basData
-      }];
-      
-    } catch (error) {
-      console.error('❌ Error calculating BAS from transactions:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * Fetch invoices from Xero
-   * @param {string} accessToken - Xero access token
-   * @param {string} tenantId - Xero tenant ID
-   * @param {Object} filters - Filter parameters
-   * @returns {Promise<Array>} Invoice data
-   */
-  async fetchInvoices(accessToken, tenantId, filters = {}) {
-    try {
-      const params = {
-        page: filters.page || 1,
-        order: filters.order || 'Date DESC'
-      };
-      
-      if (filters.where) params.where = filters.where;
-      if (filters.statuses) params.statuses = filters.statuses;
-      if (filters.contactIDs) params.contactIDs = filters.contactIDs;
-      
-      const response = await axios.get(`https://api.xero.com/api.xro/2.0/Invoices`, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Xero-tenant-id': tenantId,
-          'Accept': 'application/json'
-        },
-        params
-      });
-      
-      return response.data.Invoices || [];
-      
-    } catch (error) {
-      console.error('❌ Error fetching invoices:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * Fetch bills from Xero
-   * @param {string} accessToken - Xero access token
-   * @param {string} tenantId - Xero tenant ID
-   * @param {Object} filters - Filter parameters
-   * @returns {Promise<Array>} Bill data
-   */
-  async fetchBills(accessToken, tenantId, filters = {}) {
-    try {
-      const params = {
-        page: filters.page || 1,
-        order: filters.order || 'Date DESC'
-      };
-      
-      if (filters.where) params.where = filters.where;
-      if (filters.statuses) params.statuses = filters.statuses;
-      if (filters.contactIDs) params.contactIDs = filters.contactIDs;
-      
-      const response = await axios.get(`https://api.xero.com/api.xro/2.0/Bills`, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Xero-tenant-id': tenantId,
-          'Accept': 'application/json'
-        },
-        params
-      });
-      
-      return response.data.Bills || [];
-      
-    } catch (error) {
-      console.error('❌ Error fetching bills:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * Fetch contacts from Xero
-   * @param {string} accessToken - Xero access token
-   * @param {string} tenantId - Xero tenant ID
-   * @param {Object} filters - Filter parameters
-   * @returns {Promise<Array>} Contact data
-   */
-  async fetchContacts(accessToken, tenantId, filters = {}) {
-    try {
-      const params = {};
-      
-      if (filters.page) params.page = filters.page;
-      if (filters.order) params.order = filters.order;
-      if (filters.where) params.where = filters.where;
-      if (filters.includeArchived) params.includeArchived = filters.includeArchived;
-      
-      const response = await axios.get(`https://api.xero.com/api.xro/2.0/Contacts`, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Xero-tenant-id': tenantId,
-          'Accept': 'application/json'
-        },
-        params
-      });
-      
-      return response.data.Contacts || [];
-      
-    } catch (error) {
-      console.error('❌ Error fetching contacts:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * Fetch accounts from Xero
-   * @param {string} accessToken - Xero access token
-   * @param {string} tenantId - Xero tenant ID
-   * @returns {Promise<Array>} Account data
-   */
-  async fetchAccounts(accessToken, tenantId) {
-    try {
-      const response = await axios.get(`https://api.xero.com/api.xro/2.0/Accounts`, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Xero-tenant-id': tenantId,
-          'Accept': 'application/json'
-        }
-      });
-      
-      return response.data.Accounts || [];
-      
-    } catch (error) {
-      console.error('❌ Error fetching accounts:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * Fetch bank transactions from Xero
-   * @param {string} accessToken - Xero access token
-   * @param {string} tenantId - Xero tenant ID
-   * @param {Object} filters - Filter parameters
-   * @returns {Promise<Array>} Bank transaction data
-   */
-  async fetchBankTransactions(accessToken, tenantId, filters = {}) {
-    try {
-      const params = {
-        page: filters.page || 1,
-        order: filters.order || 'Date DESC'
-      };
-      
-      if (filters.where) params.where = filters.where;
-      if (filters.fromDate) params.fromDate = filters.fromDate;
-      if (filters.toDate) params.toDate = filters.toDate;
-      
-      const response = await axios.get(`https://api.xero.com/api.xro/2.0/BankTransactions`, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Xero-tenant-id': tenantId,
-          'Accept': 'application/json'
-        },
-        params
-      });
-      
-      return response.data.BankTransactions || [];
-      
-    } catch (error) {
-      console.error('❌ Error fetching bank transactions:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * Fetch balance sheet from Xero
-   * @param {string} accessToken - Xero access token
-   * @param {string} tenantId - Xero tenant ID
-   * @param {string} date - Balance sheet date
-   * @returns {Promise<Object>} Balance sheet data
-   */
-  async fetchBalanceSheet(accessToken, tenantId, date = null) {
-    try {
-      const params = date ? { date } : {};
-      
-      const response = await axios.get(`https://api.xero.com/api.xro/2.0/Reports/BalanceSheet`, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Xero-tenant-id': tenantId,
-          'Accept': 'application/json'
-        },
-        params
-      });
-      
-      return response.data.Reports || [];
-      
-    } catch (error) {
-      console.error('❌ Error fetching balance sheet:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * Fetch profit and loss from Xero
-   * @param {string} accessToken - Xero access token
-   * @param {string} tenantId - Xero tenant ID
-   * @param {string} fromDate - Start date
-   * @param {string} toDate - End date
-   * @returns {Promise<Object>} P&L data
-   */
-  async fetchProfitLoss(accessToken, tenantId, fromDate = null, toDate = null) {
-    try {
-      const params = {};
-      if (fromDate) params.fromDate = fromDate;
-      if (toDate) params.toDate = toDate;
-      
-      const response = await axios.get(`https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss`, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Xero-tenant-id': tenantId,
-          'Accept': 'application/json'
-        },
-        params
-      });
-      
-      return response.data.Reports || [];
-      
-    } catch (error) {
-      console.error('❌ Error fetching profit and loss:', error);
-      throw error;
-    }
-  }
-  
-  /**
-   * Cache data in database
-   * @param {number} companyId - Company ID
-   * @param {string} tenantId - Xero tenant ID
-   * @param {string} dataType - Type of data being cached
-   * @param {Object} data - Data to cache
-   * @param {number} expiryHours - Hours until cache expires (default: 1)
-   */
-  async cacheData(companyId, tenantId, dataType, data, expiryHours = 1) {
-    try {
-      const expiresAt = new Date(Date.now() + (expiryHours * 60 * 60 * 1000));
-      
-      await db.query(`
-        INSERT INTO xero_data_cache (company_id, tenant_id, data_type, data, expires_at)
-        VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (company_id, tenant_id, data_type)
-        DO UPDATE SET 
-          data = $4,
-          expires_at = $5,
-          last_synced_at = CURRENT_TIMESTAMP,
-          updated_at = CURRENT_TIMESTAMP
-      `, [companyId, tenantId, dataType, JSON.stringify(data), expiresAt]);
-      
-      console.log(`✅ Cached ${dataType} for company ${companyId}`);
-      
-    } catch (error) {
-      console.error('❌ Error caching data:', error);
-      // Don't throw error for cache failures
-    }
-  }
-  
-  /**
-   * Get cached data from database
-   * @param {number} companyId - Company ID
-   * @param {string} tenantId - Xero tenant ID
-   * @param {string} dataType - Type of data to retrieve
-   * @returns {Promise<Object|null>} Cached data or null if not found/expired
+   * @param {string} tenantId - Tenant ID
+   * @param {string} dataType - Data type
+   * @returns {Promise<Object|null>} Cached data or null
    */
   async getCachedData(companyId, tenantId, dataType) {
     try {
       const result = await db.query(`
-        SELECT data, expires_at
-        FROM xero_data_cache
+        SELECT data, cached_at, expires_at 
+        FROM xero_data_cache 
         WHERE company_id = $1 AND tenant_id = $2 AND data_type = $3
         AND (expires_at IS NULL OR expires_at > NOW())
       `, [companyId, tenantId, dataType]);
-      
+
       if (result.rows.length === 0) {
         return null;
       }
+
+      const cacheEntry = result.rows[0];
+      console.log(`📦 Using cached data for ${dataType} (cached at: ${cacheEntry.cached_at})`);
       
-      const cachedData = result.rows[0];
-      return {
-        data: JSON.parse(cachedData.data),
-        expiresAt: cachedData.expires_at
-      };
-      
+      return cacheEntry.data;
+
     } catch (error) {
       console.error('❌ Error getting cached data:', error);
       return null;
     }
   }
-  
-  // Helper methods
-  
+
   /**
-   * Check if token is expired
-   * @param {Date|string} expiresAt - Token expiration date
-   * @returns {boolean} True if expired
+   * Cache data
+   * @param {number} companyId - Company ID
+   * @param {string} tenantId - Tenant ID
+   * @param {string} dataType - Data type
+   * @param {Object} data - Data to cache
+   * @param {number} ttlMinutes - Time to live in minutes
    */
-  isTokenExpired(expiresAt) {
-    if (!expiresAt) return true;
-    
-    const expiryDate = new Date(expiresAt);
-    const now = new Date();
-    
-    // Add 5 minute buffer to avoid edge cases
-    expiryDate.setMinutes(expiryDate.getMinutes() - 5);
-    
-    return now >= expiryDate;
+  async cacheData(companyId, tenantId, dataType, data, ttlMinutes = 30) {
+    try {
+      const expiresAt = new Date(Date.now() + (ttlMinutes * 60 * 1000));
+
+      await db.query(`
+        INSERT INTO xero_data_cache (company_id, tenant_id, data_type, data, expires_at, cached_at)
+        VALUES ($1, $2, $3, $4, $5, NOW())
+        ON CONFLICT (company_id, tenant_id, data_type)
+        DO UPDATE SET
+          data = EXCLUDED.data,
+          expires_at = EXCLUDED.expires_at,
+          cached_at = NOW(),
+          updated_at = NOW()
+      `, [companyId, tenantId, dataType, data, expiresAt]);
+
+      console.log(`💾 Cached ${dataType} data for company ${companyId}, tenant ${tenantId}`);
+
+    } catch (error) {
+      console.error('❌ Error caching data:', error);
+      // Don't throw - caching is not critical
+    }
   }
-  
+
   /**
-   * Get current quarter start date
-   * @returns {string} Date in YYYY-MM-DD format
+   * Get invoices with caching
+   * @param {number} companyId - Company ID
+   * @param {string} tenantId - Tenant ID
+   * @param {Object} options - Query options
+   * @returns {Promise<Object>} Invoices data
    */
-  getCurrentQuarterStart() {
-    const now = new Date();
-    const month = now.getMonth();
-    const year = now.getFullYear();
-    
-    let quarterStart;
-    if (month < 3) quarterStart = new Date(year, 0, 1);
-    else if (month < 6) quarterStart = new Date(year, 3, 1);
-    else if (month < 9) quarterStart = new Date(year, 6, 1);
-    else quarterStart = new Date(year, 9, 1);
-    
-    return quarterStart.toISOString().split('T')[0];
-  }
-  
-  /**
-   * Get current quarter end date
-   * @returns {string} Date in YYYY-MM-DD format
-   */
-  getCurrentQuarterEnd() {
-    const now = new Date();
-    const month = now.getMonth();
-    const year = now.getFullYear();
-    
-    let quarterEnd;
-    if (month < 3) quarterEnd = new Date(year, 2, 31);
-    else if (month < 6) quarterEnd = new Date(year, 5, 30);
-    else if (month < 9) quarterEnd = new Date(year, 8, 30);
-    else quarterEnd = new Date(year, 11, 31);
-    
-    return quarterEnd.toISOString().split('T')[0];
-  }
-  
-  /**
-   * Calculate GST components from invoices and bills
-   * @param {Array} invoices - Invoice data
-   * @param {Array} bills - Bill data
-   * @returns {Object} GST calculation results
-   */
-  calculateGSTComponents(invoices, bills) {
-    let totalSales = 0;
-    let totalSalesGST = 0;
-    let totalPurchases = 0;
-    let totalPurchasesGST = 0;
-    
-    // Calculate from invoices (sales)
-    invoices.forEach(invoice => {
-      if (invoice.Type === 'ACCREC') { // Sales invoice
-        totalSales += invoice.Total || 0;
-        totalSalesGST += invoice.TotalTax || 0;
+  async getInvoices(companyId, tenantId, options = {}) {
+    try {
+      const { useCache = true, fromDate, toDate, status } = options;
+
+      // Check cache first
+      if (useCache) {
+        const cachedData = await this.getCachedData(companyId, tenantId, 'invoices');
+        if (cachedData) {
+          return cachedData;
+        }
       }
-    });
-    
-    // Calculate from bills (purchases)
-    bills.forEach(bill => {
-      if (bill.Type === 'ACCPAY') { // Purchase bill
-        totalPurchases += bill.Total || 0;
-        totalPurchasesGST += bill.TotalTax || 0;
+
+      // Get valid access token
+      const accessToken = await xeroAuthService.getValidAccessToken(companyId);
+
+      // Build query parameters
+      const params = {};
+      if (fromDate) params.date = `>=${fromDate}`;
+      if (toDate) params.date = `${params.date || ''}<=${toDate}`;
+      if (status) params.status = status;
+
+      // Fetch from Xero
+      const data = await this.fetchFromXero('/accounting.xro/2.0/Invoices', accessToken, tenantId, params);
+
+      // Cache the result
+      await this.cacheData(companyId, tenantId, 'invoices', data, 15); // 15 minutes
+
+      return data;
+
+    } catch (error) {
+      console.error('❌ Error getting invoices:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get contacts with caching
+   * @param {number} companyId - Company ID
+   * @param {string} tenantId - Tenant ID
+   * @param {Object} options - Query options
+   * @returns {Promise<Object>} Contacts data
+   */
+  async getContacts(companyId, tenantId, options = {}) {
+    try {
+      const { useCache = true, includeArchived = false } = options;
+
+      // Check cache first
+      if (useCache) {
+        const cachedData = await this.getCachedData(companyId, tenantId, 'contacts');
+        if (cachedData) {
+          return cachedData;
+        }
       }
-    });
-    
-    const netGST = totalSalesGST - totalPurchasesGST;
-    
-    return {
-      TotalSales: totalSales,
-      SalesGST: totalSalesGST,
-      TotalPurchases: totalPurchases,
-      PurchasesGST: totalPurchasesGST,
-      NetGST: netGST,
-      CalculatedFromTransactions: true
-    };
+
+      // Get valid access token
+      const accessToken = await xeroAuthService.getValidAccessToken(companyId);
+
+      // Build query parameters
+      const params = {};
+      if (!includeArchived) params.includeArchived = 'false';
+
+      // Fetch from Xero
+      const data = await this.fetchFromXero('/accounting.xro/2.0/Contacts', accessToken, tenantId, params);
+
+      // Cache the result
+      await this.cacheData(companyId, tenantId, 'contacts', data, 30); // 30 minutes
+
+      return data;
+
+    } catch (error) {
+      console.error('❌ Error getting contacts:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get BAS report data
+   * @param {number} companyId - Company ID
+   * @param {string} tenantId - Tenant ID
+   * @param {Object} options - Query options
+   * @returns {Promise<Object>} BAS data
+   */
+  async getBASData(companyId, tenantId, options = {}) {
+    try {
+      const { useCache = true, fromDate, toDate } = options;
+
+      // Check cache first
+      if (useCache) {
+        const cachedData = await this.getCachedData(companyId, tenantId, 'bas_data');
+        if (cachedData) {
+          return cachedData;
+        }
+      }
+
+      // Get valid access token
+      const accessToken = await xeroAuthService.getValidAccessToken(companyId);
+
+      // Build query parameters
+      const params = {};
+      if (fromDate) params.fromDate = fromDate;
+      if (toDate) params.toDate = toDate;
+
+      // Fetch from Xero (using reports endpoint for BAS)
+      const data = await this.fetchFromXero('/accounting.xro/2.0/Reports/BAS', accessToken, tenantId, params);
+
+      // Cache the result
+      await this.cacheData(companyId, tenantId, 'bas_data', data, 60); // 1 hour
+
+      return data;
+
+    } catch (error) {
+      console.error('❌ Error getting BAS data:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get FAS report data
+   * @param {number} companyId - Company ID
+   * @param {string} tenantId - Tenant ID
+   * @param {Object} options - Query options
+   * @returns {Promise<Object>} FAS data
+   */
+  async getFASData(companyId, tenantId, options = {}) {
+    try {
+      const { useCache = true, fromDate, toDate } = options;
+
+      // Check cache first
+      if (useCache) {
+        const cachedData = await this.getCachedData(companyId, tenantId, 'fas_data');
+        if (cachedData) {
+          return cachedData;
+        }
+      }
+
+      // Get valid access token
+      const accessToken = await xeroAuthService.getValidAccessToken(companyId);
+
+      // Build query parameters
+      const params = {};
+      if (fromDate) params.fromDate = fromDate;
+      if (toDate) params.toDate = toDate;
+
+      // Fetch from Xero (using reports endpoint for FAS)
+      const data = await this.fetchFromXero('/accounting.xro/2.0/Reports/FAS', accessToken, tenantId, params);
+
+      // Cache the result
+      await this.cacheData(companyId, tenantId, 'fas_data', data, 60); // 1 hour
+
+      return data;
+
+    } catch (error) {
+      console.error('❌ Error getting FAS data:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get financial summary
+   * @param {number} companyId - Company ID
+   * @param {string} tenantId - Tenant ID
+   * @param {Object} options - Query options
+   * @returns {Promise<Object>} Financial summary
+   */
+  async getFinancialSummary(companyId, tenantId, options = {}) {
+    try {
+      const { useCache = true, fromDate, toDate } = options;
+
+      // Check cache first
+      if (useCache) {
+        const cachedData = await this.getCachedData(companyId, tenantId, 'financial_summary');
+        if (cachedData) {
+          return cachedData;
+        }
+      }
+
+      // Get valid access token
+      const accessToken = await xeroAuthService.getValidAccessToken(companyId);
+
+      // Build query parameters
+      const params = {};
+      if (fromDate) params.fromDate = fromDate;
+      if (toDate) params.toDate = toDate;
+
+      // Fetch from Xero
+      const data = await this.fetchFromXero('/accounting.xro/2.0/Reports/ProfitAndLoss', accessToken, tenantId, params);
+
+      // Cache the result
+      await this.cacheData(companyId, tenantId, 'financial_summary', data, 30); // 30 minutes
+
+      return data;
+
+    } catch (error) {
+      console.error('❌ Error getting financial summary:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get dashboard data (combined data for dashboard)
+   * @param {number} companyId - Company ID
+   * @param {string} tenantId - Tenant ID
+   * @returns {Promise<Object>} Dashboard data
+   */
+  async getDashboardData(companyId, tenantId) {
+    try {
+      // Check cache first
+      const cachedData = await this.getCachedData(companyId, tenantId, 'dashboard_data');
+      if (cachedData) {
+        return cachedData;
+      }
+
+      // Get valid access token
+      const accessToken = await xeroAuthService.getValidAccessToken(companyId);
+
+      // Fetch multiple data sources in parallel
+      const [invoices, contacts, financialSummary] = await Promise.allSettled([
+        this.fetchFromXero('/accounting.xro/2.0/Invoices?page=1', accessToken, tenantId),
+        this.fetchFromXero('/accounting.xro/2.0/Contacts?page=1', accessToken, tenantId),
+        this.fetchFromXero('/accounting.xro/2.0/Reports/ProfitAndLoss', accessToken, tenantId)
+      ]);
+
+      const dashboardData = {
+        invoices: invoices.status === 'fulfilled' ? invoices.value : null,
+        contacts: contacts.status === 'fulfilled' ? contacts.value : null,
+        financialSummary: financialSummary.status === 'fulfilled' ? financialSummary.value : null,
+        lastUpdated: new Date().toISOString()
+      };
+
+      // Cache the result
+      await this.cacheData(companyId, tenantId, 'dashboard_data', dashboardData, 15); // 15 minutes
+
+      return dashboardData;
+
+    } catch (error) {
+      console.error('❌ Error getting dashboard data:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Clear cache for a company/tenant
+   * @param {number} companyId - Company ID
+   * @param {string} tenantId - Optional tenant ID (clears all if not provided)
+   * @param {string} dataType - Optional data type (clears all if not provided)
+   */
+  async clearCache(companyId, tenantId = null, dataType = null) {
+    try {
+      let query = 'DELETE FROM xero_data_cache WHERE company_id = $1';
+      const params = [companyId];
+
+      if (tenantId) {
+        query += ' AND tenant_id = $2';
+        params.push(tenantId);
+      }
+
+      if (dataType) {
+        query += ` AND data_type = $${params.length + 1}`;
+        params.push(dataType);
+      }
+
+      await db.query(query, params);
+      console.log(`🗑️  Cleared cache for company ${companyId}${tenantId ? `, tenant ${tenantId}` : ''}${dataType ? `, type ${dataType}` : ''}`);
+
+    } catch (error) {
+      console.error('❌ Error clearing cache:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Validate tenant access and get valid tenant ID
+   * @param {number} companyId - Company ID
+   * @param {string} requestedTenantId - Requested tenant ID
+   * @returns {Promise<string>} Validated tenant ID
+   */
+  async validateTenantAccess(companyId, requestedTenantId) {
+    return await xeroAuthService.validateTenantAccess(companyId, requestedTenantId);
   }
 }
 
