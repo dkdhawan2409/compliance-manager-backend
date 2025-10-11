@@ -214,8 +214,7 @@ app.get('/redirecturl', (req, res) => {
   });
 });
 
-// Xero callback handler at root level (OAuth2)
-app.get('/xero-callback', require('./controllers/xeroOAuth2Controller').handleCallback);
+// Xero callback is now handled by the unified controller at /api/xero/callback
 
 // 404 handler
 app.use('*', (req, res) => {

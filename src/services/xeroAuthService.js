@@ -12,7 +12,7 @@ class XeroAuthService {
     this.config = {
       clientId: process.env.XERO_CLIENT_ID,
       clientSecret: process.env.XERO_CLIENT_SECRET,
-      redirectUri: process.env.XERO_REDIRECT_URI || 'https://compliance-manager-frontend.onrender.com/redirecturl',
+      redirectUri: process.env.XERO_REDIRECT_URI || 'https://compliance-manager-backend.onrender.com/api/xero/callback',
       scopes: [
         'offline_access',
         'openid',

@@ -3,12 +3,12 @@ const router = express.Router();
 const xeroController = require('../controllers/xeroController');
 const authMiddleware = require('../middleware/auth');
 
-// Apply authentication middleware to all routes
-router.use(authMiddleware);
-
-// OAuth Routes
-router.get('/connect', xeroController.connect);
+// OAuth Routes (no authentication required)
+router.get('/connect', authMiddleware, xeroController.connect);
 router.get('/callback', xeroController.callback);
+
+// Apply authentication middleware to all other routes
+router.use(authMiddleware);
 
 // Status and Organization Routes
 router.get('/status', xeroController.getStatus);
