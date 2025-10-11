@@ -4,8 +4,8 @@ const { generateToken } = require('../utils/jwt');
 const { complianceDetailsSchema } = require('../utils/validation');
 const plugAndPlayXeroController = require('./plugAndPlayXeroController');
 
-const XERO_SETTINGS_TABLE = process.env.XERO_SETTINGS_TABLE || 'plug_and_play_xero_settings';
-const XERO_SETTINGS_VIEW = process.env.XERO_SETTINGS_VIEW || 'xero_settings';
+const XERO_SETTINGS_TABLE = process.env.XERO_SETTINGS_TABLE || 'xero_oauth_settings';
+const XERO_SETTINGS_VIEW = process.env.XERO_SETTINGS_VIEW || 'plug_and_play_xero_settings';
 
 // Internal helper to upsert Xero OAuth credentials for a company
 const upsertCompanyXeroCredentials = async (companyId, { clientId, clientSecret, redirectUri }) => {

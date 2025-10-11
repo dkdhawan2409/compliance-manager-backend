@@ -177,8 +177,7 @@ class XeroAuthService {
           created_at,
           updated_at
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), NOW())
-        ON CONFLICT (company_id) DO UPDATE SET
-          tenant_id = EXCLUDED.tenant_id,
+        ON CONFLICT (company_id, tenant_id) DO UPDATE SET
           tenant_name = EXCLUDED.tenant_name,
           access_token_encrypted = EXCLUDED.access_token_encrypted,
           refresh_token_encrypted = EXCLUDED.refresh_token_encrypted,

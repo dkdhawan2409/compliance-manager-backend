@@ -6,8 +6,8 @@ const axios = require('axios');
 const crypto = require('crypto-js');
 const db = require('../config/database');
 
-const XERO_SETTINGS_VIEW = process.env.XERO_SETTINGS_VIEW || 'xero_settings';
-const XERO_SETTINGS_TABLE = process.env.XERO_SETTINGS_TABLE || 'plug_and_play_xero_settings';
+const XERO_SETTINGS_VIEW = process.env.XERO_SETTINGS_VIEW || 'plug_and_play_xero_settings';
+const XERO_SETTINGS_TABLE = process.env.XERO_SETTINGS_TABLE || 'xero_oauth_settings';
 
 class PlugAndPlayXeroController {
   constructor() {
