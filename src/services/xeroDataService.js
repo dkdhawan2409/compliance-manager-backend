@@ -264,6 +264,7 @@ class XeroDataService {
       if (useCache) {
         const cachedData = await this.getCachedData(companyId, tenantId, 'bas_data');
         if (cachedData) {
+          console.log('✅ Returning cached BAS data');
           return cachedData;
         }
       }
@@ -271,24 +272,100 @@ class XeroDataService {
       // Get valid access token
       const accessToken = await xeroAuthService.getValidAccessToken(companyId);
 
-      // Build query parameters
-      const params = {};
-      if (fromDate) params.fromDate = fromDate;
-      if (toDate) params.toDate = toDate;
+      console.log(`📊 Fetching BAS data from multiple Xero reports for period ${fromDate} to ${toDate}`);
 
-      // Fetch from Xero (using reports endpoint for BAS)
-      const data = await this.fetchFromXero(
-        '/api.xro/2.0/Reports/BAS',
-        accessToken,
-        tenantId,
-        params,
-        { companyId }
-      );
+      // BAS data needs to be compiled from multiple Xero endpoints
+      // Xero doesn't have a direct BAS report endpoint, so we need to aggregate data
+      
+      // 1. Get GST Report (most relevant for BAS)
+      const gstParams = {};
+      if (fromDate) gstParams.fromDate = fromDate;
+      if (toDate) gstParams.toDate = toDate;
+
+      let gstReport = null;
+      try {
+        gstReport = await this.fetchFromXero(
+          '/api.xro/2.0/Reports/TaxSummary',
+          accessToken,
+          tenantId,
+          gstParams,
+          { companyId }
+        );
+      } catch (error) {
+        console.warn('⚠️  Could not fetch GST/Tax Summary report:', error.message);
+      }
+
+      // 2. Get Profit & Loss (for business activity summary)
+      let profitLoss = null;
+      try {
+        profitLoss = await this.fetchFromXero(
+          '/api.xro/2.0/Reports/ProfitAndLoss',
+          accessToken,
+          tenantId,
+          gstParams,
+          { companyId }
+        );
+      } catch (error) {
+        console.warn('⚠️  Could not fetch Profit & Loss report:', error.message);
+      }
+
+      // 3. Get Balance Sheet (for balance sheet context)
+      let balanceSheet = null;
+      try {
+        balanceSheet = await this.fetchFromXero(
+          '/api.xro/2.0/Reports/BalanceSheet',
+          accessToken,
+          tenantId,
+          gstParams,
+          { companyId }
+        );
+      } catch (error) {
+        console.warn('⚠️  Could not fetch Balance Sheet report:', error.message);
+      }
+
+      // 4. Get Invoices for the period (for detailed transaction data)
+      let invoices = null;
+      try {
+        const invoiceParams = {
+          where: `Status!="DRAFT" AND Status!="DELETED"`,
+          order: 'Date DESC'
+        };
+        if (fromDate) invoiceParams.where += ` AND Date>="${fromDate}"`;
+        if (toDate) invoiceParams.where += ` AND Date<="${toDate}"`;
+
+        invoices = await this.fetchFromXero(
+          '/api.xro/2.0/Invoices',
+          accessToken,
+          tenantId,
+          invoiceParams,
+          { companyId }
+        );
+      } catch (error) {
+        console.warn('⚠️  Could not fetch Invoices:', error.message);
+      }
+
+      // Compile BAS data from fetched reports
+      const basData = {
+        period: {
+          fromDate,
+          toDate
+        },
+        gstReport,
+        profitLoss,
+        balanceSheet,
+        invoices,
+        metadata: {
+          fetchedAt: new Date().toISOString(),
+          tenantId,
+          companyId
+        }
+      };
 
       // Cache the result
-      await this.cacheData(companyId, tenantId, 'bas_data', data, 60); // 1 hour
+      await this.cacheData(companyId, tenantId, 'bas_data', basData, 60); // 1 hour
 
-      return data;
+      console.log('✅ BAS data compiled successfully from multiple reports');
+      return basData;
 
     } catch (error) {
       console.error('❌ Error getting BAS data:', error);
