@@ -461,7 +461,7 @@ class PlugAndPlayXeroController {
 
       const settings = settingsResult.rows[0];
       const clientId = settings.client_id;
-      const clientSecret = settings.client_secret;
+      const clientSecret = settings.client_secret ? this.decrypt(settings.client_secret) : null;
       
       if (!clientId || !clientSecret) {
         return res.status(400).json({
@@ -516,14 +516,21 @@ class PlugAndPlayXeroController {
         shortCode: tenant.tenantType
       }));
 
+      const primaryTenant = tenants.length > 0 ? tenants[0] : null;
+      const organizationName = primaryTenant
+        ? primaryTenant.organizationName || primaryTenant.tenantName || primaryTenant.name
+        : null;
+
       // Save tokens to database (same approach as existing Xero integration)
       await db.query(
-        'UPDATE xero_settings SET access_token = $1, refresh_token = $2, token_expires_at = $3, tenant_id = $4, updated_at = CURRENT_TIMESTAMP WHERE company_id = $5',
+        'UPDATE xero_settings SET access_token = $1, refresh_token = $2, token_expires_at = $3, tenant_id = $4, organization_name = $5, tenant_data = $6, updated_at = CURRENT_TIMESTAMP WHERE company_id = $7',
         [
           this.encrypt(access_token),
           this.encrypt(refresh_token),
           expiresAt,
-          tenants.length > 0 ? tenants[0].id : null,
+          primaryTenant ? primaryTenant.id : null,
+          organizationName,
+          tenants.length > 0 ? JSON.stringify(tenants) : null,
           companyId
         ]
       );
@@ -715,7 +722,7 @@ class PlugAndPlayXeroController {
       }
 
       const result = await db.query(
-        'SELECT access_token, token_expires_at FROM xero_settings WHERE company_id = $1',
+        'SELECT access_token, token_expires_at, tenant_id, tenant_data FROM xero_settings WHERE company_id = $1',
         [companyId]
       );
       const settings = result.rows[0];
@@ -728,6 +735,28 @@ class PlugAndPlayXeroController {
       }
 
       let accessToken = this.decrypt(settings.access_token);
+      let effectiveTenantId = tenantId || settings.tenant_id;
+
+      if (!effectiveTenantId && settings.tenant_data) {
+        try {
+          const storedTenants = JSON.parse(settings.tenant_data);
+          if (Array.isArray(storedTenants) && storedTenants.length > 0) {
+            effectiveTenantId = storedTenants[0].tenantId || storedTenants[0].id;
+          }
+        } catch (parseError) {
+          console.warn('⚠️ Failed to parse tenant_data for company', companyId, parseError.message);
+        }
+      }
+
+      if (!effectiveTenantId) {
+        return res.status(400).json({
+          success: false,
+          message: 'No Xero organization selected. Please reconnect to Xero to select an organization.',
+          action: 'select_tenant_required'
+        });
+      }
+
+      effectiveTenantId = String(effectiveTenantId);
       if (!accessToken) {
         return res.status(401).json({
           success: false,
@@ -744,11 +773,27 @@ class PlugAndPlayXeroController {
           await this.refreshAccessTokenInternal(companyId);
           // Reload settings after refresh
           const refreshedResult = await db.query(
-            'SELECT access_token FROM xero_settings WHERE company_id = $1',
+            'SELECT access_token, tenant_id, tenant_data FROM xero_settings WHERE company_id = $1',
             [companyId]
           );
           const refreshedSettings = refreshedResult.rows[0];
           accessToken = this.decrypt(refreshedSettings.access_token);
+          if (!tenantId) {
+            effectiveTenantId =
+              refreshedSettings.tenant_id ||
+              (() => {
+                if (!refreshedSettings.tenant_data) return effectiveTenantId;
+                try {
+                  const storedTenants = JSON.parse(refreshedSettings.tenant_data);
+                  if (Array.isArray(storedTenants) && storedTenants.length > 0) {
+                    return storedTenants[0].tenantId || storedTenants[0].id || effectiveTenantId;
+                  }
+                } catch (parseError) {
+                  console.warn('⚠️ Failed to parse tenant_data after refresh for company', companyId, parseError.message);
+                }
+                return effectiveTenantId;
+              })();
+          }
           tokenRefreshed = true;
           console.log('✅ Token refreshed successfully');
         } catch (refreshError) {
@@ -761,7 +806,7 @@ class PlugAndPlayXeroController {
         }
       }
 
-      const data = await this.fetchXeroData(resourceType, accessToken, tenantId, {
+      const data = await this.fetchXeroData(resourceType, accessToken, effectiveTenantId, {
         page, pageSize, filters, dateFrom, dateTo
       });
 
@@ -769,6 +814,7 @@ class PlugAndPlayXeroController {
         success: true,
         message: `${resourceType} retrieved successfully`,
         data: data,
+        tenantId: effectiveTenantId,
         tokenRefreshed: tokenRefreshed
       });
     } catch (error) {
@@ -888,6 +934,17 @@ class PlugAndPlayXeroController {
 
     if (dateFrom) params.append('fromDate', dateFrom);
     if (dateTo) params.append('toDate', dateTo);
+    if (filters) {
+      if (typeof filters === 'string') {
+        params.append('where', filters);
+      } else if (typeof filters === 'object') {
+        Object.entries(filters).forEach(([key, value]) => {
+          if (value !== undefined && value !== null && value !== '') {
+            params.append(key, value);
+          }
+        });
+      }
+    }
 
     const url = `${this.xeroApiBaseUrl}${endpoint}${params.toString() ? '?' + params.toString() : ''}`;
     
@@ -1373,12 +1430,14 @@ async function getConnectionStatusInternal(companyId) {
       'SELECT client_id, client_secret, redirect_uri, access_token, refresh_token, token_expires_at, tenant_id, organization_name, tenant_data, updated_at FROM xero_settings WHERE company_id = $1',
       [companyId]
     );
-    
+
     const settings = result.rows.length > 0 ? result.rows[0] : null;
-    
+
     if (!settings) {
       return {
         connected: false,
+        isTokenValid: false,
+        hasExpiredTokens: false,
         hasCredentials: false,
         needsOAuth: true,
         connectionStatus: 'not_configured',
@@ -1388,56 +1447,96 @@ async function getConnectionStatusInternal(companyId) {
     }
 
     const hasCredentials = !!(settings.client_id && settings.redirect_uri);
-    const hasValidTokens = !!(settings.access_token && settings.refresh_token);
-    
-    // Check if tokens are expired
-    let tokensValid = false;
-    if (settings.access_token && settings.token_expires_at) {
-      tokensValid = new Date() < new Date(settings.token_expires_at);
-    }
-    
-    const connected = hasCredentials && hasValidTokens && tokensValid;
+    const hasStoredTokens = !!(settings.access_token && settings.refresh_token);
 
-    // Parse tenant data if available
-    let tenants = [];
-    let organizationName = settings.organization_name;
-    
-    if (settings.tenant_id) {
-      // Try to extract organization name from tenant_data if organization_name is not set
-      if (!organizationName && settings.tenant_data) {
-        try {
-          const tenantData = JSON.parse(settings.tenant_data);
-          if (tenantData && tenantData.length > 0) {
-            organizationName = tenantData[0].organisationName || tenantData[0].tenantName;
-          }
-        } catch (e) {
-          console.log('Failed to parse tenant_data:', e.message);
+    const tokenExpiry = settings.token_expires_at ? new Date(settings.token_expires_at) : null;
+    const now = new Date();
+    const tokensValid = hasStoredTokens && tokenExpiry ? now < tokenExpiry : false;
+    const tokensExpired = hasStoredTokens && tokenExpiry ? now >= tokenExpiry : false;
+
+    let parsedTenants = [];
+    if (settings.tenant_data) {
+      try {
+        const tenantData = JSON.parse(settings.tenant_data);
+        if (Array.isArray(tenantData)) {
+          parsedTenants = tenantData;
         }
+      } catch (error) {
+        console.warn('⚠️ Failed to parse tenant_data for company', companyId, error.message);
       }
-      
-      tenants = [{
-        id: settings.tenant_id,
-        name: organizationName || 'Organization',
-        organizationName: organizationName || 'Organization'
-      }];
     }
+
+    if (!parsedTenants.length && settings.tenant_id) {
+      parsedTenants = [
+        {
+          id: settings.tenant_id,
+          tenantId: settings.tenant_id,
+          tenantName: settings.organization_name || 'Organization',
+          organizationName: settings.organization_name || 'Organization'
+        }
+      ];
+    }
+
+    const primaryTenant = parsedTenants.length > 0 ? parsedTenants[0] : null;
+    const organizationName = primaryTenant
+      ? primaryTenant.organizationName || primaryTenant.tenantName || primaryTenant.name
+      : settings.organization_name || 'Organization';
+
+    const tenants = parsedTenants.map((tenant) => ({
+      id: tenant.id || tenant.tenantId,
+      tenantId: tenant.tenantId || tenant.id,
+      name: tenant.name || tenant.organizationName || tenant.tenantName || 'Organization',
+      tenantName: tenant.tenantName || tenant.name,
+      organizationName: tenant.organizationName || tenant.tenantName || tenant.name,
+      organizationCountry: tenant.organizationCountry,
+      organizationShortCode: tenant.shortCode || tenant.organisationShortCode,
+      organizationTaxNumber: tenant.organizationTaxNumber,
+      organizationLegalName: tenant.organizationLegalName || tenant.legalName
+    }));
+
+    const connected = hasCredentials && tokensValid;
+    const connectionStatus = connected
+      ? 'connected'
+      : hasCredentials
+      ? tokensExpired
+        ? 'expired'
+        : 'disconnected'
+      : 'not_configured';
+
+    const message = connected
+      ? 'Xero connected successfully'
+      : hasCredentials
+      ? tokensExpired
+        ? 'Xero token expired. Please reconnect to continue.'
+        : 'Not connected to Xero'
+      : 'Xero integration not configured';
 
     return {
       connected,
+      isTokenValid: tokensValid,
+      hasExpiredTokens: tokensExpired,
       hasCredentials,
-      hasValidTokens: tokensValid,
-      needsOAuth: hasCredentials && (!hasValidTokens || !tokensValid),
-      connectionStatus: connected ? 'connected' : (hasCredentials ? 'disconnected' : 'not_configured'),
-      message: connected ? 'Xero connected successfully' : 
-               hasCredentials ? 'Not connected to Xero' : 'Xero integration not configured',
+      hasValidTokens: hasStoredTokens,
+      needsOAuth: !hasCredentials || !hasStoredTokens || tokensExpired,
+      connectionStatus,
+      message,
       tenants,
+      primaryOrganization: primaryTenant
+        ? {
+            id: primaryTenant.tenantId || primaryTenant.id,
+            name: organizationName
+          }
+        : undefined,
       lastConnected: settings.updated_at,
-      tokenExpiresAt: settings.token_expires_at
+      tokenExpiresAt: settings.token_expires_at,
+      expiresAt: settings.token_expires_at
     };
   } catch (error) {
     console.error('❌ Connection status error:', error);
     return {
       connected: false,
+      isTokenValid: false,
+      hasExpiredTokens: false,
       hasCredentials: false,
       needsOAuth: true,
       connectionStatus: 'error',
