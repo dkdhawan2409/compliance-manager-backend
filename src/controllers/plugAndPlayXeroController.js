@@ -1313,20 +1313,20 @@ class PlugAndPlayXeroController {
         try {
           // Check if settings already exist
           const existingResult = await db.query(
-            'SELECT id FROM xero_settings WHERE company_id = $1',
+            'SELECT id FROM xero_oauth_settings WHERE company_id = $1',
             [company.id]
           );
 
           if (existingResult.rows.length > 0) {
             // Update existing settings
             await db.query(
-              'UPDATE xero_settings SET client_id = $1, client_secret = $2, redirect_uri = $3, updated_at = CURRENT_TIMESTAMP WHERE company_id = $4',
+              'UPDATE xero_oauth_settings SET client_id = $1, client_secret = $2, redirect_uri = $3, updated_at = CURRENT_TIMESTAMP WHERE company_id = $4',
               [clientId, encryptedClientSecret, redirectUri, company.id]
             );
           } else {
             // Create new settings
             await db.query(
-              'INSERT INTO xero_settings (company_id, client_id, client_secret, redirect_uri, created_at, updated_at) VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)',
+              'INSERT INTO xero_oauth_settings (company_id, client_id, client_secret, redirect_uri, created_at, updated_at) VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)',
               [company.id, clientId, encryptedClientSecret, redirectUri]
             );
           }
@@ -1448,7 +1448,7 @@ class PlugAndPlayXeroController {
     try {
       // Check if settings already exist for this company
       const existingResult = await db.query(
-        'SELECT id FROM xero_settings WHERE company_id = $1',
+        'SELECT id FROM xero_oauth_settings WHERE company_id = $1',
         [companyId]
       );
 
@@ -1463,7 +1463,7 @@ class PlugAndPlayXeroController {
       if (!settingsToUse) {
         const defaultResult = await db.query(`
           SELECT client_id, client_secret, redirect_uri 
-          FROM xero_settings 
+          FROM xero_oauth_settings 
           WHERE client_id IS NOT NULL AND client_secret IS NOT NULL 
           ORDER BY created_at ASC 
           LIMIT 1
@@ -1477,7 +1477,7 @@ class PlugAndPlayXeroController {
       if (settingsToUse && settingsToUse.client_id && settingsToUse.client_secret) {
         // Create new settings for the company
         await db.query(
-          'INSERT INTO xero_settings (company_id, client_id, client_secret, redirect_uri, created_at, updated_at) VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)',
+          'INSERT INTO xero_oauth_settings (company_id, client_id, client_secret, redirect_uri, created_at, updated_at) VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)',
           [companyId, settingsToUse.client_id, settingsToUse.client_secret, settingsToUse.redirect_uri]
         );
 
