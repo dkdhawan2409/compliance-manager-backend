@@ -90,16 +90,18 @@ class XeroAuthService {
       const companyId = stateResult.rows[0].company_id;
 
       // Exchange code for tokens
-      const tokenResponse = await axios.post(this.config.tokenUrl, {
+      const tokenParams = new URLSearchParams({
         grant_type: 'authorization_code',
         client_id: this.config.clientId,
         client_secret: this.config.clientSecret,
-        code: code,
-        redirect_uri: this.config.redirectUri
-      }, {
+        code,
+        redirect_uri: this.config.redirectUri,
+      });
+
+      const tokenResponse = await axios.post(this.config.tokenUrl, tokenParams, {
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
       });
 
       const tokens = tokenResponse.data;
@@ -240,15 +242,17 @@ class XeroAuthService {
         throw new Error('No refresh token available');
       }
 
-      const refreshResponse = await axios.post(this.config.tokenUrl, {
+      const refreshParams = new URLSearchParams({
         grant_type: 'refresh_token',
         client_id: this.config.clientId,
         client_secret: this.config.clientSecret,
-        refresh_token: connection.refresh_token_encrypted
-      }, {
+        refresh_token: connection.refresh_token_encrypted,
+      });
+
+      const refreshResponse = await axios.post(this.config.tokenUrl, refreshParams, {
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
       });
 
       const newTokens = refreshResponse.data;
