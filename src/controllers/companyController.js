@@ -4,6 +4,65 @@ const { generateToken } = require('../utils/jwt');
 const { complianceDetailsSchema } = require('../utils/validation');
 const plugAndPlayXeroController = require('./plugAndPlayXeroController');
 
+// Internal helper to upsert Xero OAuth credentials for a company
+const upsertCompanyXeroCredentials = async (companyId, { clientId, clientSecret, redirectUri }) => {
+  if (!clientId || !clientSecret || !redirectUri) {
+    throw new Error('Client ID, Client Secret, and Redirect URI are required');
+  }
+
+  const trimmedClientId = clientId.trim();
+  const trimmedClientSecret = clientSecret.trim();
+  const trimmedRedirectUri = redirectUri.trim();
+
+  if (!trimmedClientId || !trimmedClientSecret || !trimmedRedirectUri) {
+    throw new Error('Client ID, Client Secret, and Redirect URI cannot be empty');
+  }
+
+  const encryptedClientSecret = plugAndPlayXeroController.encrypt(trimmedClientSecret);
+  const timestamp = new Date();
+
+  const query = `
+    INSERT INTO xero_settings (
+      company_id,
+      client_id,
+      client_secret,
+      redirect_uri,
+      access_token,
+      refresh_token,
+      token_expires_at,
+      tenant_id,
+      organization_name,
+      tenant_data,
+      created_at,
+      updated_at
+    )
+    VALUES ($1, $2, $3, $4, NULL, NULL, NULL, NULL, NULL, NULL, $5, $5)
+    ON CONFLICT (company_id)
+    DO UPDATE SET
+      client_id = EXCLUDED.client_id,
+      client_secret = EXCLUDED.client_secret,
+      redirect_uri = EXCLUDED.redirect_uri,
+      access_token = NULL,
+      refresh_token = NULL,
+      token_expires_at = NULL,
+      tenant_id = NULL,
+      organization_name = NULL,
+      tenant_data = NULL,
+      updated_at = $5
+    RETURNING *
+  `;
+
+  const result = await Company.db.query(query, [
+    companyId,
+    trimmedClientId,
+    encryptedClientSecret,
+    trimmedRedirectUri,
+    timestamp
+  ]);
+
+  return result.rows[0];
+};
+
 // Register new company
 const register = async (req, res, next) => {
   try {
@@ -328,13 +387,6 @@ const assignXeroClientId = async (req, res, next) => {
     const { companyId } = req.params;
     const { clientId, clientSecret, redirectUri } = req.body;
 
-    if (!clientId || !clientSecret) {
-      return res.status(400).json({
-        success: false,
-        message: 'Client ID and Client Secret are required'
-      });
-    }
-
     // Verify company exists
     const company = await Company.findById(companyId, true);
     if (!company) {
@@ -342,14 +394,19 @@ const assignXeroClientId = async (req, res, next) => {
     }
 
     // Create or update Xero settings for the company
-    const XeroSettings = require('../models/XeroSettings');
-    const settingsData = {
-      clientId: clientId.trim(),
-      clientSecret: clientSecret.trim(),
-      redirectUri: redirectUri?.trim() || null
-    };
-
-    const settings = await XeroSettings.createSettings(companyId, settingsData);
+    let settings;
+    try {
+      settings = await upsertCompanyXeroCredentials(companyId, {
+        clientId,
+        clientSecret,
+        redirectUri
+      });
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: error.message || 'Failed to assign Xero credentials'
+      });
+    }
 
     res.status(200).json({
       success: true,
@@ -406,13 +463,6 @@ const assignXeroClientIdToAllCompanies = async (req, res, next) => {
   try {
     const { clientId, clientSecret, redirectUri } = req.body;
 
-    if (!clientId || !clientSecret) {
-      return res.status(400).json({
-        success: false,
-        message: 'Client ID and Client Secret are required'
-      });
-    }
-
     // Get all companies (excluding superadmins)
     const companies = await Company.getAllNoPagination();
     
@@ -421,15 +471,11 @@ const assignXeroClientIdToAllCompanies = async (req, res, next) => {
 
     for (const company of companies) {
       try {
-        // Create or update Xero settings for each company
-        const XeroSettings = require('../models/XeroSettings');
-        const settingsData = {
-          clientId: clientId.trim(),
-          clientSecret: clientSecret.trim(),
-          redirectUri: redirectUri?.trim() || null
-        };
-
-        const settings = await XeroSettings.createSettings(company.id, settingsData);
+        await upsertCompanyXeroCredentials(company.id, {
+          clientId,
+          clientSecret,
+          redirectUri
+        });
         results.push({
           companyId: company.id,
           companyName: company.companyName,
@@ -453,7 +499,8 @@ const assignXeroClientIdToAllCompanies = async (req, res, next) => {
         failed: errors.length,
         results,
         errors
-      }
+      },
+      updatedCount: results.length
     });
   } catch (error) {
     next(error);
