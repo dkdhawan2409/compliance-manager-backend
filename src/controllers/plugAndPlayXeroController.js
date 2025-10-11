@@ -52,6 +52,26 @@ class PlugAndPlayXeroController {
     }
   }
 
+  // Extract user identifier from Xero ID token (JWT)
+  extractUserIdFromToken(token) {
+    if (!token) {
+      return null;
+    }
+
+    try {
+      const base64Payload = token.split('.')[1];
+      if (!base64Payload) {
+        return null;
+      }
+      const payloadJson = Buffer.from(base64Payload, 'base64').toString('utf8');
+      const payload = JSON.parse(payloadJson);
+      return payload.sub || payload.user_id || payload.userId || null;
+    } catch (error) {
+      console.warn('⚠️  Could not extract user ID from token:', error.message);
+      return null;
+    }
+  }
+
   // Generate OAuth state parameter
   generateState() {
     return Math.random().toString(36).substring(2, 15) + 
@@ -575,8 +595,9 @@ class PlugAndPlayXeroController {
         }
       );
 
-      const { access_token, refresh_token, expires_in, token_type } = tokenResponse.data;
+      const { access_token, refresh_token, expires_in, token_type, id_token } = tokenResponse.data;
       const expiresAt = new Date(Date.now() + expires_in * 1000);
+      const tokenCreatedAt = new Date();
 
       // Get tenant information
       const tenantsResponse = await axios.get(`${this.xeroApiBaseUrl}/connections`, {
@@ -598,6 +619,13 @@ class PlugAndPlayXeroController {
       const organizationName = primaryTenant
         ? primaryTenant.organizationName || primaryTenant.tenantName || primaryTenant.name
         : null;
+      const normalizedTenantId = primaryTenant ? (primaryTenant.tenantId || primaryTenant.id) : null;
+      const primaryTenantName = organizationName || 'Unknown Organization';
+      const authorizedTenantsJson = JSON.stringify(tenants.length > 0 ? tenants : []);
+      const encryptedAccessToken = this.encrypt(access_token);
+      const encryptedRefreshToken = this.encrypt(refresh_token);
+      const encryptedClientSecret = clientSecret ? this.encrypt(clientSecret) : null;
+      const xeroUserId = id_token ? this.extractUserIdFromToken(id_token) : null;
 
       // Save tokens to database (xero_connections table)
       await db.query(
@@ -616,10 +644,11 @@ class PlugAndPlayXeroController {
           authorized_tenants,
           selected_tenant_id,
           primary_organization_name,
+          xero_user_id,
           token_created_at,
           created_at,
           updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), NOW(), NOW())
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), NOW())
         ON CONFLICT (company_id, tenant_id) DO UPDATE SET
           tenant_name = EXCLUDED.tenant_name,
           access_token_encrypted = EXCLUDED.access_token_encrypted,
@@ -629,24 +658,26 @@ class PlugAndPlayXeroController {
           authorized_tenants = EXCLUDED.authorized_tenants,
           selected_tenant_id = EXCLUDED.selected_tenant_id,
           primary_organization_name = EXCLUDED.primary_organization_name,
+          xero_user_id = EXCLUDED.xero_user_id,
           token_created_at = EXCLUDED.token_created_at,
           updated_at = NOW()`,
         [
           companyId,
-          primaryTenant ? primaryTenant.id : null,
-          organizationName || 'Unknown Organization',
-          this.encrypt(access_token),
-          this.encrypt(refresh_token),
+          normalizedTenantId,
+          primaryTenantName,
+          encryptedAccessToken,
+          encryptedRefreshToken,
           expiresAt,
           'active',
           companyId,
           clientId,
-          this.encrypt(clientSecret),
+          encryptedClientSecret,
           redirectUriForToken,
-          tenants.length > 0 ? JSON.stringify(tenants) : null,
-          primaryTenant ? primaryTenant.id : null,
-          organizationName,
-          new Date()
+          authorizedTenantsJson,
+          normalizedTenantId,
+          primaryTenantName,
+          xeroUserId,
+          tokenCreatedAt
         ]
       );
       
