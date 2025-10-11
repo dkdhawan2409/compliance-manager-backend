@@ -1,6 +1,52 @@
 const axios = require('axios');
 const crypto = require('crypto');
+const CryptoJS = require('crypto-js');
 const db = require('../config/database');
+
+const TOKEN_ENCRYPTION_KEY = process.env.XERO_TOKEN_ENCRYPTION_KEY || 'default-encryption-key-change-in-production-32-chars';
+
+/**
+ * Convert an object of key/value pairs to URL-encoded form data.
+ * Xero's OAuth endpoints expect application/x-www-form-urlencoded payloads.
+ */
+const toFormData = (data) => {
+  const params = new URLSearchParams();
+  Object.entries(data).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) {
+      params.append(key, value);
+    }
+  });
+  return params;
+};
+
+/**
+ * Detect and decrypt tokens that were stored using CryptoJS AES.
+ * Falls back to the original value when decryption fails.
+ */
+const decryptTokenIfNeeded = (value) => {
+  if (!value) {
+    return value;
+  }
+
+  // Tokens returned by Xero (JWT / opaque strings) typically start with eyJ or similar.
+  if (value.startsWith('eyJ')) {
+    return value;
+  }
+
+  // CryptoJS AES base64 output starts with U2FsdGVkX1 (Salted__).
+  if (value.startsWith('U2FsdGVkX1')) {
+    try {
+      const bytes = CryptoJS.AES.decrypt(value, TOKEN_ENCRYPTION_KEY);
+      const decrypted = bytes.toString(CryptoJS.enc.Utf8);
+      return decrypted || value;
+    } catch (error) {
+      console.warn('⚠️  Failed to decrypt Xero token, using stored value:', error.message);
+      return value;
+    }
+  }
+
+  return value;
+};
 
 /**
  * Xero Authentication Service - Unified OAuth and Token Management
@@ -90,12 +136,12 @@ class XeroAuthService {
       const companyId = stateResult.rows[0].company_id;
 
       // Exchange code for tokens
-      const tokenParams = new URLSearchParams({
+      const tokenParams = toFormData({
         grant_type: 'authorization_code',
         client_id: this.config.clientId,
         client_secret: this.config.clientSecret,
         code,
-        redirect_uri: this.config.redirectUri,
+        redirect_uri: this.config.redirectUri
       });
 
       const tokenResponse = await axios.post(this.config.tokenUrl, tokenParams, {
@@ -154,9 +200,10 @@ class XeroAuthService {
       console.log(`💾 Saving Xero connection for company ${companyId}`);
 
       const expiresAt = new Date(Date.now() + (tokens.expires_in * 1000));
+      const normalizedTenants = Array.isArray(authorizedTenants) ? authorizedTenants : [];
       
       // Use the first tenant as the primary connection
-      const primaryTenant = authorizedTenants[0];
+      const primaryTenant = normalizedTenants[0];
 
       await db.query(`
         INSERT INTO xero_connections (
@@ -203,7 +250,7 @@ class XeroAuthService {
         this.config.clientId,
         this.config.clientSecret,
         this.config.redirectUri,
-        JSON.stringify(authorizedTenants),
+        JSON.stringify(normalizedTenants),
         primaryTenant?.tenantId || null,
         primaryTenant?.tenantName || 'Unknown Organization',
         tokens.id_token ? this.extractUserIdFromToken(tokens.id_token) : null,
@@ -242,11 +289,17 @@ class XeroAuthService {
         throw new Error('No refresh token available');
       }
 
-      const refreshParams = new URLSearchParams({
+      const refreshToken = decryptTokenIfNeeded(connection.refresh_token_encrypted);
+
+      if (!refreshToken) {
+        throw new Error('No refresh token available');
+      }
+
+      const refreshParams = toFormData({
         grant_type: 'refresh_token',
         client_id: this.config.clientId,
         client_secret: this.config.clientSecret,
-        refresh_token: connection.refresh_token_encrypted,
+        refresh_token: refreshToken
       });
 
       const refreshResponse = await axios.post(this.config.tokenUrl, refreshParams, {
@@ -314,10 +367,10 @@ class XeroAuthService {
       if (isExpired) {
         console.log(`🔄 Token expired for company ${companyId}, refreshing...`);
         const newTokens = await this.refreshAccessToken(companyId);
-        return newTokens.access_token;
+        return decryptTokenIfNeeded(newTokens.access_token);
       }
 
-      return connection.access_token_encrypted;
+      return decryptTokenIfNeeded(connection.access_token_encrypted);
 
     } catch (error) {
       console.error('❌ Error getting valid token:', error);

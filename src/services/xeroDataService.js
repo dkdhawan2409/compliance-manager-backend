@@ -28,8 +28,10 @@ class XeroDataService {
    * @param {Object} params - Query parameters
    * @returns {Promise<Object>} API response
    */
-  async fetchFromXero(endpoint, accessToken, tenantId, params = {}) {
+  async fetchFromXero(endpoint, accessToken, tenantId, params = {}, options = {}) {
     try {
+      const { companyId, retryOnUnauthorized = true } = options;
+
       console.log(`📡 Fetching from Xero API: ${endpoint} for tenant ${tenantId}`);
 
       const url = `${this.baseUrl}${endpoint}`;
@@ -49,18 +51,34 @@ class XeroDataService {
       return response.data;
 
     } catch (error) {
+      const status = error.response?.status;
       console.error(`❌ Error fetching from Xero API (${endpoint}):`, {
-        status: error.response?.status,
+        status,
         statusText: error.response?.statusText,
         data: error.response?.data,
         message: error.message
       });
 
-      if (error.response?.status === 401) {
+      if (status === 401 && companyId && retryOnUnauthorized) {
+        console.warn(`⚠️  Received 401 from Xero for company ${companyId}. Attempting token refresh...`);
+        try {
+          const refreshed = await xeroAuthService.refreshAccessToken(companyId);
+          const newAccessToken = refreshed?.access_token || await xeroAuthService.getValidAccessToken(companyId);
+          return await this.fetchFromXero(endpoint, newAccessToken, tenantId, params, {
+            companyId,
+            retryOnUnauthorized: false
+          });
+        } catch (refreshError) {
+          console.error(`❌ Failed to refresh Xero token for company ${companyId}:`, refreshError.message);
+          throw new Error('Xero token expired. Please reconnect to Xero.');
+        }
+      }
+
+      if (status === 401) {
         throw new Error('Xero token expired. Please reconnect to Xero.');
       }
 
-      if (error.response?.status === 403) {
+      if (status === 403) {
         throw new Error('Access denied to Xero organization. Please check your permissions.');
       }
 
@@ -159,7 +177,13 @@ class XeroDataService {
       if (status) params.status = status;
 
       // Fetch from Xero
-      const data = await this.fetchFromXero('/accounting.xro/2.0/Invoices', accessToken, tenantId, params);
+      const data = await this.fetchFromXero(
+        '/accounting.xro/2.0/Invoices',
+        accessToken,
+        tenantId,
+        params,
+        { companyId }
+      );
 
       // Cache the result
       await this.cacheData(companyId, tenantId, 'invoices', data, 15); // 15 minutes
@@ -199,7 +223,13 @@ class XeroDataService {
       if (!includeArchived) params.includeArchived = 'false';
 
       // Fetch from Xero
-      const data = await this.fetchFromXero('/accounting.xro/2.0/Contacts', accessToken, tenantId, params);
+      const data = await this.fetchFromXero(
+        '/accounting.xro/2.0/Contacts',
+        accessToken,
+        tenantId,
+        params,
+        { companyId }
+      );
 
       // Cache the result
       await this.cacheData(companyId, tenantId, 'contacts', data, 30); // 30 minutes
@@ -240,7 +270,13 @@ class XeroDataService {
       if (toDate) params.toDate = toDate;
 
       // Fetch from Xero (using reports endpoint for BAS)
-      const data = await this.fetchFromXero('/accounting.xro/2.0/Reports/BAS', accessToken, tenantId, params);
+      const data = await this.fetchFromXero(
+        '/accounting.xro/2.0/Reports/BAS',
+        accessToken,
+        tenantId,
+        params,
+        { companyId }
+      );
 
       // Cache the result
       await this.cacheData(companyId, tenantId, 'bas_data', data, 60); // 1 hour
@@ -281,7 +317,13 @@ class XeroDataService {
       if (toDate) params.toDate = toDate;
 
       // Fetch from Xero (using reports endpoint for FAS)
-      const data = await this.fetchFromXero('/accounting.xro/2.0/Reports/FAS', accessToken, tenantId, params);
+      const data = await this.fetchFromXero(
+        '/accounting.xro/2.0/Reports/FAS',
+        accessToken,
+        tenantId,
+        params,
+        { companyId }
+      );
 
       // Cache the result
       await this.cacheData(companyId, tenantId, 'fas_data', data, 60); // 1 hour
@@ -322,7 +364,13 @@ class XeroDataService {
       if (toDate) params.toDate = toDate;
 
       // Fetch from Xero
-      const data = await this.fetchFromXero('/accounting.xro/2.0/Reports/ProfitAndLoss', accessToken, tenantId, params);
+      const data = await this.fetchFromXero(
+        '/accounting.xro/2.0/Reports/ProfitAndLoss',
+        accessToken,
+        tenantId,
+        params,
+        { companyId }
+      );
 
       // Cache the result
       await this.cacheData(companyId, tenantId, 'financial_summary', data, 30); // 30 minutes
@@ -353,10 +401,13 @@ class XeroDataService {
       const accessToken = await xeroAuthService.getValidAccessToken(companyId);
 
       // Fetch multiple data sources in parallel
+      const fetchOptions = { companyId };
+      const noRetryOptions = { companyId, retryOnUnauthorized: false };
+
       const [invoices, contacts, financialSummary] = await Promise.allSettled([
-        this.fetchFromXero('/accounting.xro/2.0/Invoices?page=1', accessToken, tenantId),
-        this.fetchFromXero('/accounting.xro/2.0/Contacts?page=1', accessToken, tenantId),
-        this.fetchFromXero('/accounting.xro/2.0/Reports/ProfitAndLoss', accessToken, tenantId)
+        this.fetchFromXero('/accounting.xro/2.0/Invoices?page=1', accessToken, tenantId, {}, fetchOptions),
+        this.fetchFromXero('/accounting.xro/2.0/Contacts?page=1', accessToken, tenantId, {}, noRetryOptions),
+        this.fetchFromXero('/accounting.xro/2.0/Reports/ProfitAndLoss', accessToken, tenantId, {}, noRetryOptions)
       ]);
 
       const dashboardData = {
