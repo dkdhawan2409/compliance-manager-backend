@@ -30,27 +30,15 @@ const upsertCompanyXeroCredentials = async (companyId, { clientId, clientSecret,
       client_id,
       client_secret,
       redirect_uri,
-      access_token,
-      refresh_token,
-      token_expires_at,
-      tenant_id,
-      organization_name,
-      tenant_data,
       created_at,
       updated_at
     )
-    VALUES ($1, $2, $3, $4, NULL, NULL, NULL, NULL, NULL, NULL, $5, $5)
+    VALUES ($1, $2, $3, $4, $5, $5)
     ON CONFLICT (company_id)
     DO UPDATE SET
       client_id = EXCLUDED.client_id,
       client_secret = EXCLUDED.client_secret,
       redirect_uri = EXCLUDED.redirect_uri,
-      access_token = NULL,
-      refresh_token = NULL,
-      token_expires_at = NULL,
-      tenant_id = NULL,
-      organization_name = NULL,
-      tenant_data = NULL,
       updated_at = $5
     RETURNING *
   `;

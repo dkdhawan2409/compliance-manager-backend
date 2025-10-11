@@ -273,15 +273,16 @@ class PlugAndPlayXeroController {
     try {
       const companyId = req.company.id;
 
+      // Set status to 'revoked' in xero_connections (preserves OAuth credentials in xero_oauth_settings)
       const result = await db.query(
-        `UPDATE ${XERO_SETTINGS_TABLE} SET access_token = NULL, refresh_token = NULL, token_expires_at = NULL, tenant_id = NULL, organization_name = NULL, tenant_data = NULL, updated_at = NOW() WHERE company_id = $1`,
+        `UPDATE xero_connections SET status = 'revoked', updated_at = NOW() WHERE company_id = $1`,
         [companyId]
       );
 
       if (result.rowCount === 0) {
         return res.status(404).json({
           success: false,
-          message: 'Xero settings not found for this company'
+          message: 'No active Xero connection found for this company'
         });
       }
 
@@ -598,17 +599,54 @@ class PlugAndPlayXeroController {
         ? primaryTenant.organizationName || primaryTenant.tenantName || primaryTenant.name
         : null;
 
-      // Save tokens to database (same approach as existing Xero integration)
+      // Save tokens to database (xero_connections table)
       await db.query(
-        `UPDATE ${XERO_SETTINGS_TABLE} SET access_token = $1, refresh_token = $2, token_expires_at = $3, tenant_id = $4, organization_name = $5, tenant_data = $6, updated_at = CURRENT_TIMESTAMP WHERE company_id = $7`,
+        `INSERT INTO xero_connections (
+          company_id,
+          tenant_id,
+          tenant_name,
+          access_token_encrypted,
+          refresh_token_encrypted,
+          access_token_expires_at,
+          status,
+          created_by,
+          client_id,
+          client_secret,
+          redirect_uri,
+          authorized_tenants,
+          selected_tenant_id,
+          primary_organization_name,
+          token_created_at,
+          created_at,
+          updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), NOW(), NOW())
+        ON CONFLICT (company_id, tenant_id) DO UPDATE SET
+          tenant_name = EXCLUDED.tenant_name,
+          access_token_encrypted = EXCLUDED.access_token_encrypted,
+          refresh_token_encrypted = EXCLUDED.refresh_token_encrypted,
+          access_token_expires_at = EXCLUDED.access_token_expires_at,
+          status = 'active',
+          authorized_tenants = EXCLUDED.authorized_tenants,
+          selected_tenant_id = EXCLUDED.selected_tenant_id,
+          primary_organization_name = EXCLUDED.primary_organization_name,
+          token_created_at = EXCLUDED.token_created_at,
+          updated_at = NOW()`,
         [
+          companyId,
+          primaryTenant ? primaryTenant.id : null,
+          organizationName || 'Unknown Organization',
           this.encrypt(access_token),
           this.encrypt(refresh_token),
           expiresAt,
+          'active',
+          companyId,
+          clientId,
+          this.encrypt(clientSecret),
+          redirectUriForToken,
+          tenants.length > 0 ? JSON.stringify(tenants) : null,
           primaryTenant ? primaryTenant.id : null,
           organizationName,
-          tenants.length > 0 ? JSON.stringify(tenants) : null,
-          companyId
+          new Date()
         ]
       );
       
@@ -747,9 +785,15 @@ class PlugAndPlayXeroController {
 
       console.log('✅ Token refresh successful, updating database...');
 
-      // Update tokens in database
+      // Update tokens in xero_connections table
       await db.query(
-        `UPDATE ${XERO_SETTINGS_TABLE} SET access_token = $1, refresh_token = $2, token_expires_at = $3, updated_at = CURRENT_TIMESTAMP WHERE company_id = $4`,
+        `UPDATE xero_connections 
+         SET access_token_encrypted = $1, 
+             refresh_token_encrypted = $2, 
+             access_token_expires_at = $3, 
+             status = 'active',
+             updated_at = CURRENT_TIMESTAMP 
+         WHERE company_id = $4`,
         [
           this.encrypt(access_token),
           this.encrypt(new_refresh_token),
