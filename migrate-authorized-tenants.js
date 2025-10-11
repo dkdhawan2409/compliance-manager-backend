@@ -82,8 +82,8 @@ async function migrateAuthorizedTenants() {
     // Step 5: Create index
     console.log('\n5️⃣ Creating index for performance...');
     await db.query(`
-      CREATE INDEX IF NOT EXISTS idx_xero_settings_authorized_tenants 
-      ON xero_settings USING GIN (authorized_tenants)
+      CREATE INDEX IF NOT EXISTS idx_xero_connections_authorized_tenants 
+      ON xero_connections USING GIN (authorized_tenants)
     `);
     console.log('✅ Index created');
     

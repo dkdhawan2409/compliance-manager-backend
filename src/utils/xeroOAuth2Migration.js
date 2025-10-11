@@ -60,7 +60,8 @@ async function runOAuth2Migration() {
     `);
 
     // Create indexes for performance
-    await db.query(`CREATE INDEX IF NOT EXISTS idx_xero_settings_company_id ON xero_settings(company_id)`);
+    // Skip index creation - xero_settings is now a view
+    console.log('Skipping index creation on xero_settings (now a view)');
     await db.query(`CREATE INDEX IF NOT EXISTS idx_xero_oauth_states_state ON xero_oauth_states(state)`);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_xero_oauth_states_company_id ON xero_oauth_states(company_id)`);
 

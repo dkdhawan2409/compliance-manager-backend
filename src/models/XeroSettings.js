@@ -198,10 +198,9 @@ class XeroSettings {
       
       await db.query(query);
       
-      // Create index for faster lookups
-      await db.query(`
-        CREATE INDEX IF NOT EXISTS idx_xero_settings_company_id ON xero_settings(company_id)
-      `);
+      // Skip index creation if xero_settings is a view (which it is after migration)
+      // Indexes are created on the underlying xero_connections table instead
+      console.log('Skipping index creation - xero_settings is now a view');
       
       console.log('Xero settings table created successfully');
     } catch (error) {

@@ -67,7 +67,8 @@ async function runMigration() {
     `);
 
     // Create indexes
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_xero_settings_company_id ON xero_settings(company_id)`);
+    // Skip index creation - xero_settings is now a view
+    console.log('Skipping index creation on xero_settings (now a view)');
     await client.query(`CREATE INDEX IF NOT EXISTS idx_xero_oauth_states_state ON xero_oauth_states(state)`);
 
     console.log('✅ Xero Settings Migration completed successfully');
