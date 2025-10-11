@@ -185,7 +185,7 @@ class XeroDataService {
 
       // Fetch from Xero
       const data = await this.fetchFromXero(
-        '/accounting.xro/2.0/Invoices',
+        '/api.xro/2.0/Invoices',
         accessToken,
         tenantId,
         params,
@@ -231,7 +231,7 @@ class XeroDataService {
 
       // Fetch from Xero
       const data = await this.fetchFromXero(
-        '/accounting.xro/2.0/Contacts',
+        '/api.xro/2.0/Contacts',
         accessToken,
         tenantId,
         params,
@@ -278,7 +278,7 @@ class XeroDataService {
 
       // Fetch from Xero (using reports endpoint for BAS)
       const data = await this.fetchFromXero(
-        '/accounting.xro/2.0/Reports/BAS',
+        '/api.xro/2.0/Reports/BAS',
         accessToken,
         tenantId,
         params,
@@ -325,7 +325,7 @@ class XeroDataService {
 
       // Fetch from Xero (using reports endpoint for FAS)
       const data = await this.fetchFromXero(
-        '/accounting.xro/2.0/Reports/FAS',
+        '/api.xro/2.0/Reports/FAS',
         accessToken,
         tenantId,
         params,
@@ -372,7 +372,7 @@ class XeroDataService {
 
       // Fetch from Xero
       const data = await this.fetchFromXero(
-        '/accounting.xro/2.0/Reports/ProfitAndLoss',
+        '/api.xro/2.0/Reports/ProfitAndLoss',
         accessToken,
         tenantId,
         params,
@@ -412,9 +412,9 @@ class XeroDataService {
       const noRetryOptions = { companyId, retryOnUnauthorized: false };
 
       const [invoices, contacts, financialSummary] = await Promise.allSettled([
-        this.fetchFromXero('/accounting.xro/2.0/Invoices?page=1', accessToken, tenantId, {}, fetchOptions),
-        this.fetchFromXero('/accounting.xro/2.0/Contacts?page=1', accessToken, tenantId, {}, noRetryOptions),
-        this.fetchFromXero('/accounting.xro/2.0/Reports/ProfitAndLoss', accessToken, tenantId, {}, noRetryOptions)
+        this.fetchFromXero('/api.xro/2.0/Invoices?page=1', accessToken, tenantId, {}, fetchOptions),
+        this.fetchFromXero('/api.xro/2.0/Contacts?page=1', accessToken, tenantId, {}, noRetryOptions),
+        this.fetchFromXero('/api.xro/2.0/Reports/ProfitAndLoss', accessToken, tenantId, {}, noRetryOptions)
       ]);
 
       const dashboardData = {
