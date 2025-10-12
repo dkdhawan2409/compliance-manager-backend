@@ -388,6 +388,7 @@ class XeroDataService {
       if (useCache) {
         const cachedData = await this.getCachedData(companyId, tenantId, 'fas_data');
         if (cachedData) {
+          console.log('✅ Returning cached FAS data');
           return cachedData;
         }
       }
@@ -395,24 +396,116 @@ class XeroDataService {
       // Get valid access token
       const accessToken = await xeroAuthService.getValidAccessToken(companyId);
 
-      // Build query parameters
-      const params = {};
-      if (fromDate) params.fromDate = fromDate;
-      if (toDate) params.toDate = toDate;
+      console.log(`📊 Fetching FAS data from multiple Xero reports for period ${fromDate} to ${toDate}`);
 
-      // Fetch from Xero (using reports endpoint for FAS)
-      const data = await this.fetchFromXero(
-        '/api.xro/2.0/Reports/FAS',
-        accessToken,
-        tenantId,
-        params,
-        { companyId }
-      );
+      // FAS (Fringe Benefits Tax) data needs to be compiled from multiple Xero endpoints
+      // Xero doesn't have a direct FAS report endpoint, so we need to aggregate data
+      
+      // 1. Get Payroll Summary (most relevant for FBT)
+      const fbtParams = {};
+      if (fromDate) fbtParams.fromDate = fromDate;
+      if (toDate) fbtParams.toDate = toDate;
+
+      let payrollSummary = null;
+      try {
+        payrollSummary = await this.fetchFromXero(
+          '/api.xro/2.0/Reports/PayrollSummary',
+          accessToken,
+          tenantId,
+          fbtParams,
+          { companyId }
+        );
+      } catch (error) {
+        console.warn('⚠️  Could not fetch Payroll Summary report:', error.message);
+      }
+
+      // 2. Get Profit & Loss (for business activity summary)
+      let profitLoss = null;
+      try {
+        profitLoss = await this.fetchFromXero(
+          '/api.xro/2.0/Reports/ProfitAndLoss',
+          accessToken,
+          tenantId,
+          fbtParams,
+          { companyId }
+        );
+      } catch (error) {
+        console.warn('⚠️  Could not fetch Profit & Loss report:', error.message);
+      }
+
+      // 3. Get Balance Sheet (for balance sheet context)
+      let balanceSheet = null;
+      try {
+        balanceSheet = await this.fetchFromXero(
+          '/api.xro/2.0/Reports/BalanceSheet',
+          accessToken,
+          tenantId,
+          fbtParams,
+          { companyId }
+        );
+      } catch (error) {
+        console.warn('⚠️  Could not fetch Balance Sheet report:', error.message);
+      }
+
+      // 4. Get Bank Transactions for the period (for detailed FBT-related transactions)
+      let bankTransactions = null;
+      try {
+        const bankParams = {
+          where: `Status!="DELETED"`,
+          order: 'Date DESC'
+        };
+        if (fromDate) bankParams.where += ` AND Date>="${fromDate}"`;
+        if (toDate) bankParams.where += ` AND Date<="${toDate}"`;
+
+        bankTransactions = await this.fetchFromXero(
+          '/api.xro/2.0/BankTransactions',
+          accessToken,
+          tenantId,
+          bankParams,
+          { companyId }
+        );
+      } catch (error) {
+        console.warn('⚠️  Could not fetch Bank Transactions:', error.message);
+      }
+
+      // 5. Get Accounts (for FBT liability accounts)
+      let accounts = null;
+      try {
+        accounts = await this.fetchFromXero(
+          '/api.xro/2.0/Accounts',
+          accessToken,
+          tenantId,
+          { where: `Type=="LIABILITY" OR Type=="EXPENSE"` },
+          { companyId }
+        );
+      } catch (error) {
+        console.warn('⚠️  Could not fetch Accounts:', error.message);
+      }
+
+      // Compile FAS data from fetched reports
+      const fasData = {
+        period: {
+          fromDate,
+          toDate
+        },
+        payrollSummary,
+        profitLoss,
+        balanceSheet,
+        bankTransactions,
+        accounts,
+        metadata: {
+          fetchedAt: new Date().toISOString(),
+          tenantId,
+          companyId,
+          note: 'FAS data compiled from multiple Xero reports as Xero does not provide a direct FAS endpoint'
+        }
+      };
 
       // Cache the result
-      await this.cacheData(companyId, tenantId, 'fas_data', data, 60); // 1 hour
+      await this.cacheData(companyId, tenantId, 'fas_data', fasData, 60); // 1 hour
 
-      return data;
+      console.log('✅ FAS data compiled successfully from multiple reports');
+      return fasData;
 
     } catch (error) {
       console.error('❌ Error getting FAS data:', error);
