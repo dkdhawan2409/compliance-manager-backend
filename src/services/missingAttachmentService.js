@@ -14,6 +14,7 @@ try {
   notificationService = null;
 }
 const db = require('../config/database');
+const xeroAuthService = require('./xeroAuthService');
 
 class MissingAttachmentService {
   constructor() {
@@ -61,246 +62,156 @@ class MissingAttachmentService {
   async detectMissingAttachments(companyId, tenantId = null) {
     try {
       console.log(`🔍 Detecting missing attachments for company ${companyId}`);
-      
-      // SECURITY: Ensure we only fetch data for the specified company
+
       if (!companyId) {
         throw new Error('Company ID is required for data isolation');
       }
 
-      // Get Xero settings from the new Xero Flow integration
-      console.log(`🔍 [Company ${companyId}] Retrieving Xero settings from database...`);
-      const result = await db.query(
-        'SELECT client_id, client_secret, redirect_uri, access_token, refresh_token, token_expires_at, tenant_id, organization_name, tenant_data, authorized_tenants, created_at, updated_at FROM xero_settings WHERE company_id = $1',
-        [companyId]
-      );
-      
-      const xeroSettings = result.rows.length > 0 ? result.rows[0] : null;
-      console.log(`🔍 [Company ${companyId}] Xero settings retrieved: ${xeroSettings ? 'YES' : 'NO'}`);
-      if (xeroSettings) {
-        console.log(`🔍 [Company ${companyId}] Access token present: ${!!xeroSettings.access_token}`);
-        console.log(`🔍 [Company ${companyId}] Tenant ID present: ${!!xeroSettings.tenant_id}`);
-        console.log(`🔍 [Company ${companyId}] Organization: ${xeroSettings.organization_name || 'Unknown'}`);
-      }
-      if (!xeroSettings) {
-        throw new Error(`Xero settings not found for company ${companyId}. Please configure Xero Flow integration first.`);
+      const numericCompanyId = Number(companyId);
+      let accessToken = null;
+      let effectiveTenantId = null;
+      let usingUnifiedAuth = false;
+
+      // Attempt to use the unified Xero auth service (preferred path)
+      try {
+        effectiveTenantId = await xeroAuthService.validateTenantAccess(numericCompanyId, tenantId);
+        accessToken = await xeroAuthService.getValidAccessToken(numericCompanyId);
+        usingUnifiedAuth = true;
+        console.log(`✅ Using unified Xero auth service for company ${companyId}. Tenant: ${effectiveTenantId}`);
+      } catch (authError) {
+        console.warn(`⚠️ Unified Xero auth service unavailable for company ${companyId}:`, authError.message);
       }
 
-      // Check if we have a valid access token
-      if (!xeroSettings.access_token) {
-        throw new Error(`Xero access token not found for company ${companyId}. Please complete Xero Flow connection first.`);
-      }
+      let xeroSettings = null;
 
-      // Check if refresh token exists (required for token refresh)
-      if (!xeroSettings.refresh_token) {
-        throw new Error(`Xero refresh token not found for company ${companyId}. Please reconnect to Xero Flow to get new tokens.`);
-      }
+      if (!accessToken) {
+        // Legacy fallback: read from xero_settings table
+        const legacyResult = await db.query(
+          'SELECT client_id, client_secret, redirect_uri, access_token, refresh_token, token_expires_at, tenant_id, organization_name, tenant_data, authorized_tenants, created_at, updated_at FROM xero_settings WHERE company_id = $1',
+          [companyId]
+        );
 
-      // Check if refresh token might be expired (Xero refresh tokens expire after 60 days)
-      // Use created_at if available, otherwise fall back to updated_at
-      const tokenCreatedAt = xeroSettings.created_at || xeroSettings.updated_at;
-      const refreshTokenAge = tokenCreatedAt ? new Date() - new Date(tokenCreatedAt) : null;
-      const refreshTokenAgeDays = refreshTokenAge ? Math.floor(refreshTokenAge / (1000 * 60 * 60 * 24)) : null;
-      
-      console.log(`🔍 Refresh token age check for company ${companyId}:`, {
-        createdAt: xeroSettings.created_at,
-        updatedAt: xeroSettings.updated_at,
-        ageInDays: refreshTokenAgeDays,
-        isPotentiallyExpired: refreshTokenAgeDays && refreshTokenAgeDays > 55
-      });
-      
-      // More aggressive approach: Try to refresh if token is older than 50 days
-      // This gives us more time to get fresh tokens before they expire
-      if (refreshTokenAgeDays && refreshTokenAgeDays > 50) {
-        console.warn(`⚠️ Refresh token for company ${companyId} is ${refreshTokenAgeDays} days old. Attempting proactive refresh...`);
-        
-        // Try to refresh the token proactively
+        xeroSettings = legacyResult.rows.length > 0 ? legacyResult.rows[0] : null;
+        console.log(`🔍 [Company ${companyId}] Legacy Xero settings retrieved: ${xeroSettings ? 'YES' : 'NO'}`);
+
+        if (!xeroSettings) {
+          throw new Error(`Xero settings not found for company ${companyId}. Please configure Xero Flow integration first.`);
+        }
+
+        if (!xeroSettings.access_token) {
+          throw new Error(`Xero access token not found for company ${companyId}. Please complete Xero Flow connection first.`);
+        }
+
+        if (!xeroSettings.refresh_token) {
+          throw new Error(`Xero refresh token not found for company ${companyId}. Please reconnect to Xero Flow to get new tokens.`);
+        }
+
+        const parseTenants = (raw) => {
+          if (!raw) return [];
+          if (Array.isArray(raw)) return raw;
+          if (typeof raw === 'string') {
+            try {
+              const parsed = JSON.parse(raw);
+              return Array.isArray(parsed) ? parsed : [];
+            } catch (parseError) {
+              console.warn(`⚠️ Failed to parse tenant data for company ${companyId}:`, parseError.message);
+              return [];
+            }
+          }
+          if (typeof raw === 'object' && Array.isArray(raw.tenants)) {
+            return raw.tenants;
+          }
+          return [];
+        };
+
+        const authorizedTenants = [
+          ...parseTenants(xeroSettings.authorized_tenants),
+          ...parseTenants(xeroSettings.tenant_data),
+        ];
+
+        effectiveTenantId = xeroSettings.tenant_id || null;
+        if (tenantId) {
+          const match = authorizedTenants.find((tenant) => {
+            const ids = [tenant?.tenantId, tenant?.tenant_id, tenant?.id, tenant?.connectionId].filter(Boolean);
+            return ids.includes(tenantId);
+          });
+
+          if (match) {
+            effectiveTenantId = tenantId;
+          } else {
+            console.warn(`⚠️ Requested tenant ${tenantId} is not authorized for company ${companyId}. Using stored tenant.`);
+          }
+        } else if (!effectiveTenantId && authorizedTenants.length > 0) {
+          const fallbackTenant = authorizedTenants[0];
+          effectiveTenantId = fallbackTenant?.tenantId || fallbackTenant?.tenant_id || fallbackTenant?.id || null;
+        }
+
+        if (!effectiveTenantId) {
+          throw new Error(`Xero tenant ID not found for company ${companyId}. Please reconnect to Xero Flow.`);
+        }
+
+        // Attempt to refresh token (legacy path)
         try {
           await this.refreshXeroToken(companyId, xeroSettings);
-          console.log(`✅ Proactive token refresh successful for company ${companyId}`);
-          
-          // Reload settings after refresh
           const refreshedResult = await db.query(
             'SELECT access_token, refresh_token, token_expires_at, tenant_id FROM xero_settings WHERE company_id = $1',
             [companyId]
           );
+
           if (refreshedResult.rows.length > 0 && refreshedResult.rows[0].access_token) {
             xeroSettings.access_token = refreshedResult.rows[0].access_token;
             xeroSettings.refresh_token = refreshedResult.rows[0].refresh_token;
             xeroSettings.token_expires_at = refreshedResult.rows[0].token_expires_at;
             xeroSettings.tenant_id = refreshedResult.rows[0].tenant_id;
-            console.log(`✅ Proactive refresh completed for company ${companyId}`);
+            console.log(`✅ Legacy token refresh successful for company ${companyId}`);
+          } else {
+            console.warn('⚠️ Legacy token refresh did not return new credentials. Continuing with existing token.');
           }
         } catch (refreshError) {
-          console.error(`❌ Proactive refresh failed for company ${companyId}:`, refreshError.message);
-          
-          // Check for specific error types in proactive refresh
-          if (refreshError.message.includes('invalid_grant') || refreshError.message.includes('Refresh token has expired')) {
-            console.error(`❌ Refresh token for company ${companyId} is definitely expired`);
-            throw new Error(`Xero refresh token has expired (created ${refreshTokenAgeDays} days ago). Please reconnect to Xero Flow to get new tokens.`);
-          } else if (refreshError.message.includes('invalid_client') || refreshError.message.includes('Invalid client credentials')) {
+          console.error(`❌ Failed to refresh Xero token for company ${companyId}:`, refreshError);
+
+          const message = refreshError.message || '';
+          if (message.includes('invalid_grant') || message.includes('Refresh token has expired')) {
+            throw new Error(`Xero refresh token has expired for company ${companyId}. Please reconnect to Xero Flow to get new tokens.`);
+          }
+          if (message.includes('invalid_client') || message.includes('Invalid client credentials')) {
             throw new Error(`Invalid Xero client credentials for company ${companyId}. Please check Xero app configuration.`);
-          } else if (refreshError.message.includes('unauthorized_client')) {
+          }
+          if (message.includes('Missing client credentials')) {
+            throw new Error(`Missing Xero client credentials for company ${companyId}. Please reconfigure Xero integration.`);
+          }
+          if (message.includes('unauthorized_client')) {
             throw new Error(`Xero app not authorized for company ${companyId}. Please check your Xero app status and permissions.`);
           }
-          
-          // If proactive refresh fails, check if token is definitely expired
-          if (refreshTokenAgeDays && refreshTokenAgeDays > 65) {
-            console.error(`❌ Refresh token for company ${companyId} is ${refreshTokenAgeDays} days old - definitely expired`);
-            throw new Error(`Xero refresh token has expired (created ${refreshTokenAgeDays} days ago). Please reconnect to Xero Flow to get new tokens.`);
-          }
-          
-          // If not definitely expired, continue with existing token
-          console.warn(`⚠️ Continuing with existing token for company ${companyId} despite refresh failure`);
-        }
-      }
 
-      const parseTenants = (raw) => {
-        if (!raw) return [];
-        try {
-          if (Array.isArray(raw)) return raw;
-          if (typeof raw === 'string') {
-            const parsed = JSON.parse(raw);
-            return Array.isArray(parsed) ? parsed : [];
-          }
-          if (typeof raw === 'object' && Array.isArray(raw.tenants)) {
-            return raw.tenants;
-          }
-        } catch (tenantParseError) {
-          console.warn(`⚠️ Failed to parse tenant data for company ${companyId}:`, tenantParseError.message);
-        }
-        return [];
-      };
-
-      const authorizedTenants = [
-        ...parseTenants(xeroSettings.authorized_tenants),
-        ...parseTenants(xeroSettings.tenant_data),
-      ];
-
-      let effectiveTenantId = xeroSettings.tenant_id;
-
-      if (tenantId) {
-        const tenantMatch = authorizedTenants.find((tenant) => {
-          const candidateIds = [
-            tenant?.tenantId,
-            tenant?.tenant_id,
-            tenant?.id,
-            tenant?.connectionId,
-          ].filter(Boolean);
-          return candidateIds.includes(tenantId);
-        });
-
-        if (tenantMatch) {
-          console.log(`✅ Using requested tenant ${tenantId} for company ${companyId} (authorized).`);
-          effectiveTenantId = tenantId;
-
-          if (tenantId !== xeroSettings.tenant_id) {
-            try {
-              await db.query(
-                'UPDATE xero_settings SET tenant_id = $1, organization_name = COALESCE($2, organization_name), updated_at = NOW() WHERE company_id = $3',
-                [
-                  tenantId,
-                  tenantMatch?.organizationName ||
-                    tenantMatch?.organisationName ||
-                    tenantMatch?.name ||
-                    xeroSettings.organization_name,
-                  companyId,
-                ],
-              );
-              xeroSettings.tenant_id = tenantId;
-              if (tenantMatch?.organizationName || tenantMatch?.organisationName || tenantMatch?.name) {
-                xeroSettings.organization_name =
-                  tenantMatch.organizationName || tenantMatch.organisationName || tenantMatch.name;
-              }
-            } catch (tenantUpdateError) {
-              console.warn(
-                `⚠️ Failed to update default tenant for company ${companyId} to ${tenantId}:`,
-                tenantUpdateError.message,
-              );
-            }
-          }
-        } else {
-          console.warn(
-            `⚠️ Requested tenant ${tenantId} is not in authorized list for company ${companyId}. Falling back to stored tenant.`,
-          );
-        }
-      }
-
-      if (!effectiveTenantId) {
-        throw new Error(`Xero tenant ID not found for company ${companyId}. Please reconnect to Xero Flow.`);
-      }
-
-      // Log for audit trail
-      console.log(`🔒 Data isolation: Company ${companyId} accessing tenant ${effectiveTenantId}`);
-
-      // Always attempt to refresh token before making API calls to ensure we have a fresh token
-      console.log(`🔄 Ensuring fresh token for company ${companyId} before API calls...`);
-      try {
-        await this.refreshXeroToken(companyId, xeroSettings);
-        // Reload settings after refresh
-        const refreshedResult = await db.query(
-          'SELECT access_token, refresh_token, token_expires_at, tenant_id FROM xero_settings WHERE company_id = $1',
-          [companyId]
-        );
-        if (refreshedResult.rows.length > 0 && refreshedResult.rows[0].access_token) {
-          xeroSettings.access_token = refreshedResult.rows[0].access_token;
-          xeroSettings.refresh_token = refreshedResult.rows[0].refresh_token;
-          xeroSettings.token_expires_at = refreshedResult.rows[0].token_expires_at;
-          xeroSettings.tenant_id = refreshedResult.rows[0].tenant_id;
-          console.log(`✅ Token refreshed successfully for company ${companyId}`);
-        } else {
-          throw new Error('Failed to retrieve refreshed token from database');
-        }
-      } catch (refreshError) {
-        console.error(`❌ Failed to refresh Xero token for company ${companyId}:`, refreshError);
-        
-        // Check if this is a refresh token expiry error
-        if (refreshError.message.includes('invalid_grant') || refreshError.message.includes('Refresh token has expired')) {
-          throw new Error(`Xero refresh token has expired for company ${companyId}. Please reconnect to Xero Flow to get new tokens.`);
-        } else if (refreshError.message.includes('invalid_client') || refreshError.message.includes('Invalid client credentials')) {
-          throw new Error(`Invalid Xero client credentials for company ${companyId}. Please check Xero app configuration.`);
-        } else if (refreshError.message.includes('Missing client credentials')) {
-          throw new Error(`Missing Xero client credentials for company ${companyId}. Please reconfigure Xero integration.`);
-        } else if (refreshError.message.includes('unauthorized_client')) {
-          throw new Error(`Xero app not authorized for company ${companyId}. Please check your Xero app status and permissions.`);
-        } else {
-          // If refresh fails for other reasons, log the error but continue with existing token
           console.warn(`⚠️ Token refresh failed for company ${companyId}, continuing with existing token:`, refreshError.message);
         }
+
+        accessToken = xeroSettings.access_token;
       }
 
-      console.log(`🔍 Fetching real Xero data for company ${companyId}, tenant ${effectiveTenantId}`);
-      console.log(`🔍 Access token present: ${!!xeroSettings.access_token}`);
-      console.log(`🔍 Access token length: ${xeroSettings.access_token ? xeroSettings.access_token.length : 0} characters`);
-      console.log(`🔍 Tenant ID present: ${!!effectiveTenantId}`);
-      console.log(`🔍 Using Xero token for API calls: ${xeroSettings.access_token ? 'YES' : 'NO'}`);
-
-      // Validate required data before proceeding
-      if (!xeroSettings.access_token) {
-        throw new Error(`Access token is missing for company ${companyId}. Please reconnect to Xero Flow.`);
+      if (!accessToken) {
+        throw new Error(`Unable to obtain Xero access token for company ${companyId}. Please reconnect to Xero.`);
       }
+
       if (!effectiveTenantId) {
-        throw new Error(`Tenant ID is missing for company ${companyId}. Please reconnect to Xero Flow.`);
+        throw new Error(`Tenant ID is missing for company ${companyId}. Please reconnect to Xero.`);
       }
 
-      // Fetch all transactions from Xero (company-specific)
-      const transactions = await this.fetchAllTransactions(xeroSettings.access_token, effectiveTenantId, companyId);
-      
-      // Filter transactions without attachments
-      const missingAttachments = transactions.filter(transaction => {
-        return !transaction.HasAttachments || transaction.HasAttachments === false;
-      });
+      console.log(`🔍 Fetching Xero data for company ${companyId}, tenant ${effectiveTenantId} (${usingUnifiedAuth ? 'unified auth' : 'legacy credentials'})`);
+      const transactions = await this.fetchAllTransactions(accessToken, effectiveTenantId, companyId);
 
+      const missingAttachments = transactions.filter((transaction) => !transaction.HasAttachments);
       console.log(`📎 Found ${missingAttachments.length} transactions without attachments`);
       console.log(`🔐 [Company ${companyId}] Xero token successfully used to fetch ${transactions.length} total transactions`);
-      
-      // Calculate money at risk for each transaction
-      const transactionsWithRisk = missingAttachments.map(transaction => {
+
+      const transactionsWithRisk = missingAttachments.map((transaction) => {
         const moneyAtRisk = this.calculateMoneyAtRisk(transaction);
         return {
           ...transaction,
           moneyAtRisk,
           companyId,
-          tenantId
+          tenantId: effectiveTenantId,
         };
       });
 
@@ -310,14 +221,6 @@ class MissingAttachmentService {
       throw error;
     }
   }
-
-  /**
-   * Fetch all transactions from Xero (invoices, bank transactions, etc.)
-   * @param {string} accessToken - Xero access token
-   * @param {string} tenantId - Xero tenant ID
-   * @param {string} companyId - Company ID (for logging and security)
-   * @returns {Promise<Array>} All transactions
-   */
   async fetchAllTransactions(accessToken, tenantId, companyId) {
     const transactions = [];
     
