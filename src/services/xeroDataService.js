@@ -276,11 +276,21 @@ class XeroDataService {
 
       // BAS data needs to be compiled from multiple Xero endpoints
       // Xero doesn't have a direct BAS report endpoint, so we need to aggregate data
-      
-      // 1. Get GST Report (most relevant for BAS)
+
       const gstParams = {};
       if (fromDate) gstParams.fromDate = fromDate;
       if (toDate) gstParams.toDate = toDate;
+
+      const profitLossParams = {};
+      if (fromDate) profitLossParams.fromDate = fromDate;
+      if (toDate) profitLossParams.toDate = toDate;
+
+      const balanceSheetParams = { periods: '1' };
+      if (toDate) {
+        balanceSheetParams.date = toDate;
+      } else if (fromDate) {
+        balanceSheetParams.date = fromDate;
+      }
 
       let gstReport = null;
       try {
@@ -302,7 +312,7 @@ class XeroDataService {
           '/api.xro/2.0/Reports/ProfitAndLoss',
           accessToken,
           tenantId,
-          gstParams,
+          profitLossParams,
           { companyId }
         );
       } catch (error) {
@@ -316,7 +326,7 @@ class XeroDataService {
           '/api.xro/2.0/Reports/BalanceSheet',
           accessToken,
           tenantId,
-          gstParams,
+          balanceSheetParams,
           { companyId }
         );
       } catch (error) {
@@ -400,11 +410,21 @@ class XeroDataService {
 
       // FAS (Fringe Benefits Tax) data needs to be compiled from multiple Xero endpoints
       // Xero doesn't have a direct FAS report endpoint, so we need to aggregate data
-      
-      // 1. Get Payroll Summary (most relevant for FBT)
+
       const fbtParams = {};
       if (fromDate) fbtParams.fromDate = fromDate;
       if (toDate) fbtParams.toDate = toDate;
+
+      const profitLossParams = {};
+      if (fromDate) profitLossParams.fromDate = fromDate;
+      if (toDate) profitLossParams.toDate = toDate;
+
+      const balanceSheetParams = { periods: '1' };
+      if (toDate) {
+        balanceSheetParams.date = toDate;
+      } else if (fromDate) {
+        balanceSheetParams.date = fromDate;
+      }
 
       let payrollSummary = null;
       try {
@@ -426,7 +446,7 @@ class XeroDataService {
           '/api.xro/2.0/Reports/ProfitAndLoss',
           accessToken,
           tenantId,
-          fbtParams,
+          profitLossParams,
           { companyId }
         );
       } catch (error) {
@@ -440,7 +460,7 @@ class XeroDataService {
           '/api.xro/2.0/Reports/BalanceSheet',
           accessToken,
           tenantId,
-          fbtParams,
+          balanceSheetParams,
           { companyId }
         );
       } catch (error) {
