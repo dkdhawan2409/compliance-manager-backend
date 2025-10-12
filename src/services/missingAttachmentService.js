@@ -70,7 +70,7 @@ class MissingAttachmentService {
       // Get Xero settings from the new Xero Flow integration
       console.log(`🔍 [Company ${companyId}] Retrieving Xero settings from database...`);
       const result = await db.query(
-        'SELECT client_id, client_secret, redirect_uri, access_token, refresh_token, token_expires_at, tenant_id, organization_name, tenant_data FROM xero_settings WHERE company_id = $1',
+        'SELECT client_id, client_secret, redirect_uri, access_token, refresh_token, token_expires_at, tenant_id, organization_name, tenant_data, authorized_tenants, created_at, updated_at FROM xero_settings WHERE company_id = $1',
         [companyId]
       );
       
@@ -154,9 +154,77 @@ class MissingAttachmentService {
         }
       }
 
-      // SECURITY: Always use the company's own tenant ID from their settings
-      // Never allow override of tenant ID to prevent cross-company data access
-      const effectiveTenantId = xeroSettings.tenant_id;
+      const parseTenants = (raw) => {
+        if (!raw) return [];
+        try {
+          if (Array.isArray(raw)) return raw;
+          if (typeof raw === 'string') {
+            const parsed = JSON.parse(raw);
+            return Array.isArray(parsed) ? parsed : [];
+          }
+          if (typeof raw === 'object' && Array.isArray(raw.tenants)) {
+            return raw.tenants;
+          }
+        } catch (tenantParseError) {
+          console.warn(`⚠️ Failed to parse tenant data for company ${companyId}:`, tenantParseError.message);
+        }
+        return [];
+      };
+
+      const authorizedTenants = [
+        ...parseTenants(xeroSettings.authorized_tenants),
+        ...parseTenants(xeroSettings.tenant_data),
+      ];
+
+      let effectiveTenantId = xeroSettings.tenant_id;
+
+      if (tenantId) {
+        const tenantMatch = authorizedTenants.find((tenant) => {
+          const candidateIds = [
+            tenant?.tenantId,
+            tenant?.tenant_id,
+            tenant?.id,
+            tenant?.connectionId,
+          ].filter(Boolean);
+          return candidateIds.includes(tenantId);
+        });
+
+        if (tenantMatch) {
+          console.log(`✅ Using requested tenant ${tenantId} for company ${companyId} (authorized).`);
+          effectiveTenantId = tenantId;
+
+          if (tenantId !== xeroSettings.tenant_id) {
+            try {
+              await db.query(
+                'UPDATE xero_settings SET tenant_id = $1, organization_name = COALESCE($2, organization_name), updated_at = NOW() WHERE company_id = $3',
+                [
+                  tenantId,
+                  tenantMatch?.organizationName ||
+                    tenantMatch?.organisationName ||
+                    tenantMatch?.name ||
+                    xeroSettings.organization_name,
+                  companyId,
+                ],
+              );
+              xeroSettings.tenant_id = tenantId;
+              if (tenantMatch?.organizationName || tenantMatch?.organisationName || tenantMatch?.name) {
+                xeroSettings.organization_name =
+                  tenantMatch.organizationName || tenantMatch.organisationName || tenantMatch.name;
+              }
+            } catch (tenantUpdateError) {
+              console.warn(
+                `⚠️ Failed to update default tenant for company ${companyId} to ${tenantId}:`,
+                tenantUpdateError.message,
+              );
+            }
+          }
+        } else {
+          console.warn(
+            `⚠️ Requested tenant ${tenantId} is not in authorized list for company ${companyId}. Falling back to stored tenant.`,
+          );
+        }
+      }
+
       if (!effectiveTenantId) {
         throw new Error(`Xero tenant ID not found for company ${companyId}. Please reconnect to Xero Flow.`);
       }
