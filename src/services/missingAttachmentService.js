@@ -885,8 +885,11 @@ Reply STOP to opt out.`;
         };
       }
 
+      let smsEnabled = config.smsEnabled ?? config.enableSMS ?? false;
+      let emailEnabled = config.emailEnabled ?? config.enableEmail ?? false;
+
       // Check if notifications are enabled
-      if (!config.enableSMS && !config.enableEmail) {
+      if (!smsEnabled && !emailEnabled) {
         console.log('📧 Notifications are disabled for this company');
         return {
           success: false,
@@ -906,21 +909,23 @@ Reply STOP to opt out.`;
       }
 
       // Validate phone number if SMS is enabled
-      if (config.enableSMS && config.phoneNumber && !notificationService.validatePhoneNumber(config.phoneNumber)) {
+      if (smsEnabled && config.phoneNumber && !notificationService.validatePhoneNumber(config.phoneNumber)) {
         console.log('📧 Invalid phone number format, disabling SMS notifications');
-        config.enableSMS = false;
+        smsEnabled = false;
       }
 
       // Validate email address if email is enabled
-      if (config.enableEmail && config.emailAddress && !notificationService.validateEmail(config.emailAddress)) {
+      if (emailEnabled && config.emailAddress && !notificationService.validateEmail(config.emailAddress)) {
         console.log('📧 Invalid email address format, disabling email notifications');
-        config.enableEmail = false;
+        emailEnabled = false;
       }
 
       // Send notifications using the notification service
       const notificationConfig = {
-        enableSMS: config.enableSMS,
-        enableEmail: config.enableEmail,
+        enableSMS: smsEnabled,
+        enableEmail: emailEnabled,
+        smsEnabled,
+        emailEnabled,
         phoneNumber: config.phoneNumber,
         emailAddress: config.emailAddress
       };

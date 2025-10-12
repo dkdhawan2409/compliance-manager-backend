@@ -171,13 +171,18 @@ const getNotificationStatus = async (req, res) => {
       emailAddressValid = notificationService.validateEmail(config.emailAddress);
     }
     
+    const smsEnabled = config?.smsEnabled ?? config?.enableSMS ?? false;
+    const emailEnabled = config?.emailEnabled ?? config?.enableEmail ?? false;
+
     res.json({
       success: true,
       data: {
         // Company notification settings
         company: {
-          enableSMS: config?.enableSMS || false,
-          enableEmail: config?.enableEmail || false,
+          enableSMS: smsEnabled,
+          enableEmail: emailEnabled,
+          smsEnabled,
+          emailEnabled,
           phoneNumber: config?.phoneNumber || null,
           emailAddress: config?.emailAddress || null,
           phoneNumberValid: phoneNumberValid,
@@ -190,8 +195,8 @@ const getNotificationStatus = async (req, res) => {
         },
         // Overall status
         status: {
-          smsAvailable: notificationConfig.twilio.configured && phoneNumberValid,
-          emailAvailable: notificationConfig.email.configured && emailAddressValid,
+          smsAvailable: notificationConfig.twilio.configured && phoneNumberValid && smsEnabled,
+          emailAvailable: notificationConfig.email.configured && emailAddressValid && emailEnabled,
           fullyConfigured: notificationConfig.twilio.configured && notificationConfig.email.configured
         }
       }

@@ -155,8 +155,11 @@ class NotificationService {
     const emailHtml = this.generateMissingAttachmentEmailHtml(missingAttachments, companyName, missingCount);
     const emailText = this.generateMissingAttachmentEmailText(missingAttachments, companyName, missingCount);
 
+    const smsEnabled = config.enableSMS ?? config.smsEnabled ?? false;
+    const emailEnabled = config.enableEmail ?? config.emailEnabled ?? false;
+
     // Send SMS if enabled and phone number is provided
-    if (config.enableSMS && config.phoneNumber) {
+    if (smsEnabled && config.phoneNumber) {
       console.log(`📱 Sending SMS notification for ${missingCount} missing attachments`);
       results.sms = await this.sendSMS(config.phoneNumber, smsMessage);
     } else {
@@ -168,7 +171,7 @@ class NotificationService {
     }
 
     // Send Email if enabled and email address is provided
-    if (config.enableEmail && config.emailAddress) {
+    if (emailEnabled && config.emailAddress) {
       console.log(`📧 Sending email notification for ${missingCount} missing attachments`);
       results.email = await this.sendEmail(config.emailAddress, emailSubject, emailHtml, emailText);
     } else {
