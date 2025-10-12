@@ -84,7 +84,28 @@ const updateConfig = async (req, res) => {
       maxDailyNotifications,
       notificationFrequency
     } = req.body;
-    
+
+    const sanitizePhoneNumberInput = (value) => {
+      if (value === undefined) return undefined;
+      if (value === null) return null;
+      if (typeof value !== 'string') return value;
+      const trimmed = value.trim();
+      if (!trimmed) return null;
+      return trimmed.replace(/[\s-]/g, '');
+    };
+
+    const sanitizeEmailInput = (value) => {
+      if (value === undefined) return undefined;
+      if (value === null) return null;
+      if (typeof value !== 'string') return value;
+      const trimmed = value.trim();
+      if (!trimmed) return null;
+      return trimmed;
+    };
+
+    const sanitizedPhoneNumber = sanitizePhoneNumberInput(phoneNumber);
+    const sanitizedEmailAddress = sanitizeEmailInput(emailAddress);
+
     // Validate input
     if (gstThreshold !== undefined && (gstThreshold < 0 || gstThreshold > 999999.99)) {
       return res.status(400).json({
@@ -109,8 +130,8 @@ const updateConfig = async (req, res) => {
         enabled: enabled !== undefined ? enabled : true,
         smsEnabled: smsEnabled !== undefined ? smsEnabled : true,
         emailEnabled: emailEnabled !== undefined ? emailEnabled : false,
-        phoneNumber,
-        emailAddress,
+        phoneNumber: sanitizedPhoneNumber ?? null,
+        emailAddress: sanitizedEmailAddress ?? null,
         linkExpiryDays: linkExpiryDays || 7,
         maxDailyNotifications: maxDailyNotifications || 50,
         notificationFrequency: notificationFrequency || 'immediate'
@@ -123,8 +144,8 @@ const updateConfig = async (req, res) => {
         enabled: enabled !== undefined ? enabled : config.enabled,
         smsEnabled: smsEnabled !== undefined ? smsEnabled : config.smsEnabled,
         emailEnabled: emailEnabled !== undefined ? emailEnabled : config.emailEnabled,
-        phoneNumber: phoneNumber !== undefined ? phoneNumber : config.phoneNumber,
-        emailAddress: emailAddress !== undefined ? emailAddress : config.emailAddress,
+        phoneNumber: sanitizedPhoneNumber !== undefined ? sanitizedPhoneNumber : config.phoneNumber,
+        emailAddress: sanitizedEmailAddress !== undefined ? sanitizedEmailAddress : config.emailAddress,
         linkExpiryDays: linkExpiryDays !== undefined ? linkExpiryDays : config.linkExpiryDays,
         maxDailyNotifications: maxDailyNotifications !== undefined ? maxDailyNotifications : config.maxDailyNotifications,
         notificationFrequency: notificationFrequency !== undefined ? notificationFrequency : config.notificationFrequency
