@@ -711,27 +711,26 @@ Reply STOP to opt out.`;
         throw new Error('Company not found');
       }
 
-      // Get company's Xero settings
-      const xeroSettingsQuery = `
-        SELECT * FROM xero_settings 
-        WHERE company_id = $1 AND access_token IS NOT NULL AND refresh_token IS NOT NULL
-        LIMIT 1
-      `;
-      const xeroSettingsResult = await db.query(xeroSettingsQuery, [companyId]);
-      
-      if (!xeroSettingsResult.rows || xeroSettingsResult.rows.length === 0) {
-        throw new Error('Xero not connected for this company');
+      const numericCompanyId = Number(companyId);
+      let tenantId = null;
+
+      try {
+        tenantId = await xeroAuthService.validateTenantAccess(numericCompanyId, null);
+        console.log(`✅ Using tenant ${tenantId} for company ${companyId}`);
+      } catch (tenantError) {
+        console.warn(`⚠️ Unable to get tenant from unified auth for company ${companyId}:`, tenantError.message);
+
+        const legacyTenantResult = await db.query(
+          'SELECT tenant_id FROM xero_settings WHERE company_id = $1 AND tenant_id IS NOT NULL LIMIT 1',
+          [companyId]
+        );
+
+        if (legacyTenantResult.rows.length > 0) {
+          tenantId = legacyTenantResult.rows[0].tenant_id;
+          console.log(`📦 Falling back to legacy tenant ${tenantId} for company ${companyId}`);
+        }
       }
 
-      const xeroSettings = xeroSettingsResult.rows[0];
-      
-      // Use the actual tenant ID from Xero settings
-      const tenantId = xeroSettings.tenant_id;
-      if (!tenantId) {
-        throw new Error('Xero tenant ID not found in settings. Please reconnect to Xero.');
-      }
-      
-      // Detect missing attachments
       const missingAttachments = await this.detectMissingAttachments(companyId, tenantId);
       
       const results = {
@@ -757,7 +756,8 @@ Reply STOP to opt out.`;
           // Check if upload link already exists for this transaction
           const transactionId = transaction.InvoiceID || transaction.BankTransactionID || transaction.ReceiptID || transaction.PurchaseOrderID;
           
-          let uploadLink = await this.findOrCreateUploadLink(transactionId, companyId, tenantId, transaction.type);
+          const transactionTenantId = transaction.tenantId || tenantId;
+          let uploadLink = await this.findOrCreateUploadLink(transactionId, companyId, transactionTenantId, transaction.type);
 
           // Get company's missing attachment config
           const config = await MissingAttachmentConfig.findOne({ companyId });
