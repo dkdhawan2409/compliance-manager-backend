@@ -20,6 +20,7 @@ router.post('/process', auth, addCompanyContext, validateCompanyDataAccess, miss
 
 // Upload link management (require authentication + company isolation)
 router.get('/upload-links', auth, addCompanyContext, validateCompanyDataAccess, missingAttachmentController.getUploadLinks);
+router.post('/upload-links', auth, addCompanyContext, validateCompanyDataAccess, missingAttachmentController.createUploadLink);
 router.get('/statistics', auth, addCompanyContext, validateCompanyDataAccess, missingAttachmentController.getStatistics);
 router.delete('/cleanup', auth, addCompanyContext, validateCompanyDataAccess, missingAttachmentController.cleanupExpiredLinks);
 router.get('/duplicates', auth, addCompanyContext, validateCompanyDataAccess, missingAttachmentController.getDuplicateStats);

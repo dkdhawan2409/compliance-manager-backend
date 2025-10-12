@@ -341,6 +341,42 @@ const processMissingAttachments = async (req, res) => {
 };
 
 /**
+ * Create or retrieve an upload link for a specific transaction
+ */
+const createUploadLink = async (req, res) => {
+  try {
+    const companyId = req.company.id;
+    const { transactionId, transactionType, tenantId } = req.body;
+
+    if (!transactionId || !tenantId || !transactionType) {
+      return res.status(400).json({
+        success: false,
+        message: 'transactionId, transactionType, and tenantId are required',
+      });
+    }
+
+    const uploadLink = await missingAttachmentService.findOrCreateUploadLink(
+      transactionId,
+      companyId,
+      tenantId,
+      transactionType,
+    );
+
+    res.json({
+      success: true,
+      data: uploadLink,
+    });
+  } catch (error) {
+    console.error('❌ Error creating upload link:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create upload link',
+      error: error.message,
+    });
+  }
+};
+
+/**
  * Get upload links for a company
  */
 const getUploadLinks = async (req, res) => {
@@ -640,6 +676,7 @@ module.exports = {
   getNotificationStatus,
   detectMissingAttachments,
   processMissingAttachments,
+  createUploadLink,
   getUploadLinks,
   getUploadPage,
   uploadReceipt,
