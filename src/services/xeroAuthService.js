@@ -431,16 +431,14 @@ class XeroAuthService {
    * @param {string} status
    */
   async invalidateConnectionTokens(companyId, status = 'expired') {
+    // Instead of setting tokens to NULL (which violates NOT NULL constraint),
+    // we'll delete the entire row to properly invalidate the connection
     await db.query(`
-      UPDATE xero_connections
-      SET 
-        access_token_encrypted = NULL,
-        refresh_token_encrypted = NULL,
-        access_token_expires_at = NULL,
-        status = $2,
-        updated_at = NOW()
+      DELETE FROM xero_connections
       WHERE company_id = $1
-    `, [companyId, status]);
+    `, [companyId]);
+    
+    console.log(`✅ Invalidated Xero connection for company ${companyId} with status: ${status}`);
   }
 
   /**
@@ -602,17 +600,19 @@ class XeroAuthService {
     try {
       console.log(`🔌 Disconnecting Xero for company ${companyId}`);
 
-      await db.query(`
-        UPDATE xero_connections 
-        SET 
-          access_token_encrypted = NULL,
-          refresh_token_encrypted = NULL,
-          access_token_expires_at = NULL,
-          status = 'disconnected',
-          authorized_tenants = '[]'::jsonb,
-          updated_at = NOW()
+      // Instead of setting tokens to NULL (which violates NOT NULL constraint),
+      // we'll delete the entire row to properly disconnect
+      const deleteResult = await db.query(`
+        DELETE FROM xero_connections 
         WHERE company_id = $1
       `, [companyId]);
+
+      if (deleteResult.rowCount === 0) {
+        console.log(`⚠️  No Xero connection found for company ${companyId}`);
+        // Still proceed with cache cleanup even if no connection found
+      } else {
+        console.log(`✅ Successfully disconnected Xero for company ${companyId}`);
+      }
 
       // Clear cache
       await db.query('DELETE FROM xero_data_cache WHERE company_id = $1', [companyId]);
