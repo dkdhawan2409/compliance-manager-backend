@@ -302,10 +302,20 @@ class XeroAuthService {
         throw new Error('No refresh token available');
       }
 
+      // Use per-company credentials from connection, fallback to global config
+      const clientId = connection.client_id || this.config.clientId;
+      const clientSecret = decryptTokenIfNeeded(connection.client_secret) || this.config.clientSecret;
+
+      if (!clientId || !clientSecret) {
+        throw new Error('Xero client credentials not configured. Please update Client ID and Client Secret.');
+      }
+
+      console.log(`🔐 Using ${connection.client_id ? 'per-company' : 'global'} credentials for token refresh`);
+
       const refreshParams = toFormData({
         grant_type: 'refresh_token',
-        client_id: this.config.clientId,
-        client_secret: this.config.clientSecret,
+        client_id: clientId,
+        client_secret: clientSecret,
         refresh_token: refreshToken
       });
 
@@ -366,7 +376,12 @@ class XeroAuthService {
 
         if (errorCode === 'invalid_client') {
           console.error(`❌ Xero client credentials invalid for company ${companyId}.`);
-          throw new Error('Xero client credentials invalid. Please update Client ID and Client Secret.');
+          // Check if we have client credentials in the connection
+          const hasCompanyCredentials = connection.client_id && connection.client_secret;
+          const errorMessage = hasCompanyCredentials
+            ? 'Xero client credentials are invalid or expired. Please reconnect to Xero with valid credentials.'
+            : 'Xero client credentials not found. Please set up your Xero connection with Client ID and Client Secret.';
+          throw new Error(errorMessage);
         }
       }
 
