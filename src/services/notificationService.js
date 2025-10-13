@@ -1,4 +1,5 @@
 const twilio = require('twilio');
+const NotificationSetting = require('../models/NotificationSetting');
 // Optional import for nodemailer (may not exist in production)
 let nodemailer;
 try {
@@ -40,6 +41,27 @@ class NotificationService {
     }
   }
 
+  async ensureTwilioClient() {
+    if (this.twilioClient && this.twilioPhoneNumber) {
+      return true;
+    }
+
+    try {
+      const twilioConfig = await NotificationSetting.getTwilioSettings();
+      if (twilioConfig?.accountSid && twilioConfig?.authToken) {
+        this.twilioAccountSid = twilioConfig.accountSid;
+        this.twilioAuthToken = twilioConfig.authToken;
+        this.twilioPhoneNumber = twilioConfig.fromNumber || twilioConfig.phoneNumber || this.twilioPhoneNumber;
+        this.twilioClient = twilio(this.twilioAccountSid, this.twilioAuthToken);
+        return true;
+      }
+    } catch (error) {
+      console.error('❌ Failed to load Twilio settings from database:', error);
+    }
+
+    return false;
+  }
+
   /**
    * Send SMS notification using Twilio
    * @param {string} phoneNumber - Recipient phone number
@@ -48,12 +70,13 @@ class NotificationService {
    */
   async sendSMS(phoneNumber, message) {
     try {
-      if (!this.twilioClient) {
-        throw new Error('Twilio not configured. Please set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN environment variables.');
+      const hasClient = await this.ensureTwilioClient();
+      if (!hasClient) {
+        throw new Error('Twilio not configured. Please set environment variables or configure Twilio credentials in the admin notification settings.');
       }
 
       if (!this.twilioPhoneNumber) {
-        throw new Error('Twilio phone number not configured. Please set TWILIO_PHONE_NUMBER environment variable.');
+        throw new Error('Twilio phone number not configured. Please set TWILIO_PHONE_NUMBER environment variable or provide a From Number in the admin notification settings.');
       }
 
       console.log(`📱 Sending SMS to ${phoneNumber}: ${message.substring(0, 50)}...`);

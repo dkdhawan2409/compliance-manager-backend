@@ -5,6 +5,7 @@ const Company = require('../models/Company');
 const { UploadLink } = require('../models/UploadLink');
 const { MissingAttachmentConfig } = require('../models/MissingAttachmentConfig');
 const emailService = require('./emailService');
+const NotificationSetting = require('../models/NotificationSetting');
 // Optional import for notification service (may not exist in production)
 let notificationService;
 try {
@@ -652,9 +653,22 @@ class MissingAttachmentService {
    */
   async sendSMSNotification(transaction, uploadLink, phoneNumber) {
     try {
-      const twilioAccountSid = process.env.TWILIO_ACCOUNT_SID;
-      const twilioAuthToken = process.env.TWILIO_AUTH_TOKEN;
-      const twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER;
+      let twilioAccountSid = process.env.TWILIO_ACCOUNT_SID;
+      let twilioAuthToken = process.env.TWILIO_AUTH_TOKEN;
+      let twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER;
+
+      if (!twilioAccountSid || !twilioAuthToken || !twilioPhoneNumber) {
+        try {
+          const twilioConfig = await NotificationSetting.getTwilioSettings();
+          if (twilioConfig) {
+            twilioAccountSid = twilioAccountSid || twilioConfig.accountSid;
+            twilioAuthToken = twilioAuthToken || twilioConfig.authToken;
+            twilioPhoneNumber = twilioPhoneNumber || twilioConfig.fromNumber || twilioConfig.phoneNumber;
+          }
+        } catch (configError) {
+          console.error('❌ Failed to load Twilio settings from database:', configError);
+        }
+      }
 
       if (!twilioAccountSid || !twilioAuthToken || !twilioPhoneNumber) {
         throw new Error('Twilio credentials not configured');
