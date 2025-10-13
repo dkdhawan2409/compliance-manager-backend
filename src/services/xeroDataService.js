@@ -20,6 +20,264 @@ class XeroDataService {
     };
   }
 
+  formatDateForXero(dateString, endOfDay = false) {
+    if (!dateString) return null;
+
+    const isoMatch = typeof dateString === 'string'
+      ? dateString.trim().match(/^([0-9]{4})-([0-9]{2})-([0-9]{2})$/)
+      : null;
+
+    if (isoMatch) {
+      const [, yearStr, monthStr, dayStr] = isoMatch;
+      const year = parseInt(yearStr, 10);
+      const month = parseInt(monthStr, 10);
+      const day = parseInt(dayStr, 10);
+
+      if (!Number.isNaN(year) && !Number.isNaN(month) && !Number.isNaN(day)) {
+        if (endOfDay) {
+          return `DateTime(${year}, ${month}, ${day}, 23, 59, 59)`;
+        }
+        return `DateTime(${year}, ${month}, ${day})`;
+      }
+    }
+
+    const parsed = new Date(dateString);
+    if (Number.isNaN(parsed.getTime())) {
+      return null;
+    }
+
+    const year = parsed.getUTCFullYear();
+    const month = parsed.getUTCMonth() + 1;
+    const day = parsed.getUTCDate();
+
+    if (endOfDay) {
+      return `DateTime(${year}, ${month}, ${day}, 23, 59, 59)`;
+    }
+
+    return `DateTime(${year}, ${month}, ${day})`;
+  }
+
+  escapeXeroString(value) {
+    if (value === null || value === undefined) return '';
+    return String(value).replace(/"/g, '\\"');
+  }
+
+  normalizeInvoiceFilters(rawFilters = {}) {
+    if (!rawFilters || typeof rawFilters !== 'object') {
+      return { statuses: [] };
+    }
+
+    const filters = { ...rawFilters };
+    const statusSet = new Set();
+
+    const collectStatuses = (input) => {
+      if (!input) return;
+      if (Array.isArray(input)) {
+        input.forEach(collectStatuses);
+        return;
+      }
+
+      const normalized = String(input)
+        .split(',')
+        .map((val) => val.trim())
+        .filter((val) => val.length > 0);
+
+      normalized.forEach((val) => statusSet.add(val.toUpperCase()));
+    };
+
+    collectStatuses(filters.status);
+    collectStatuses(filters.statuses);
+    collectStatuses(filters.statusFilter);
+
+    delete filters.status;
+    delete filters.statuses;
+    delete filters.statusFilter;
+
+    const toNumber = (value) => {
+      if (value === null || value === undefined || value === '') return undefined;
+      const num = Number(value);
+      return Number.isFinite(num) ? num : undefined;
+    };
+
+    const parseBooleanFlag = (value) => {
+      if (typeof value === 'boolean') return value;
+      if (typeof value === 'string') {
+        return ['true', '1', 'yes', 'on'].includes(value.trim().toLowerCase());
+      }
+      return false;
+    };
+
+    const toArray = (value) => {
+      if (!value) return undefined;
+      if (Array.isArray(value)) {
+        const arr = value.map((item) => String(item).trim()).filter((item) => item.length > 0);
+        return arr.length > 0 ? arr : undefined;
+      }
+      if (typeof value === 'string') {
+        const arr = value.split(',').map((item) => item.trim()).filter((item) => item.length > 0);
+        return arr.length > 0 ? arr : undefined;
+      }
+      return undefined;
+    };
+
+    const normalizeString = (value) => {
+      if (typeof value !== 'string') return undefined;
+      const trimmed = value.trim();
+      return trimmed.length > 0 ? trimmed : undefined;
+    };
+
+    const normalized = {
+      statuses: Array.from(statusSet),
+      contactId: normalizeString(filters.contactId || filters.contactID || filters.contact_id),
+      contactIds: toArray(filters.contactIds || filters.contact_ids),
+      contactName: normalizeString(filters.contactName || filters.contact_name),
+      invoiceNumber: normalizeString(filters.invoiceNumber || filters.number || filters.invoice_number),
+      reference: normalizeString(filters.reference || filters.referenceNumber || filters.ref),
+      minTotal: toNumber(filters.minTotal || filters.totalMin || filters.amountMin),
+      maxTotal: toNumber(filters.maxTotal || filters.totalMax || filters.amountMax),
+      overdueOnly: parseBooleanFlag(filters.overdueOnly || filters.overdue || filters.isOverdue),
+      type: normalizeString(filters.type || filters.invoiceType),
+      search: normalizeString(filters.search || filters.searchTerm || filters.query),
+      dueDateFrom: normalizeString(filters.dueDateFrom || filters.due_date_from),
+      dueDateTo: normalizeString(filters.dueDateTo || filters.due_date_to),
+      updatedSince: normalizeString(filters.updatedSince || filters.updated_since)
+    };
+
+    Object.keys(normalized).forEach((key) => {
+      if (
+        normalized[key] === undefined ||
+        normalized[key] === null ||
+        (typeof normalized[key] === 'string' && normalized[key].length === 0)
+      ) {
+        delete normalized[key];
+      }
+    });
+
+    return normalized;
+  }
+
+  combineStatusFilters(statusParam, statusesFromFilters = []) {
+    const statusSet = new Set();
+
+    const addStatus = (value) => {
+      if (!value) return;
+      if (Array.isArray(value)) {
+        value.forEach(addStatus);
+        return;
+      }
+
+      String(value)
+        .split(',')
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0)
+        .forEach((item) => statusSet.add(item.toUpperCase()));
+    };
+
+    addStatus(statusParam);
+    addStatus(statusesFromFilters);
+
+    return Array.from(statusSet);
+  }
+
+  hasInvoiceFilters({ fromDate, toDate, statuses, sort, filters }) {
+    if (fromDate || toDate || sort) {
+      return true;
+    }
+
+    if (Array.isArray(statuses) && statuses.length > 0) {
+      return true;
+    }
+
+    if (!filters) {
+      return false;
+    }
+
+    return Object.keys(filters).some((key) => {
+      const value = filters[key];
+      if (value === undefined || value === null) return false;
+      if (typeof value === 'string' && value.trim().length === 0) return false;
+      if (Array.isArray(value) && value.length === 0) return false;
+      if (typeof value === 'boolean') return value; // only true flags remain after normalization
+      return true;
+    });
+  }
+
+  resolvePageSize(pageSize) {
+    const parsed = parseInt(pageSize, 10);
+    if (Number.isNaN(parsed) || parsed <= 0) {
+      return 100;
+    }
+    return Math.min(parsed, 100);
+  }
+
+  buildOrderParam(sort) {
+    if (!sort || typeof sort !== 'string') {
+      return undefined;
+    }
+
+    const [fieldRaw, directionRaw] = sort.split(':');
+    const field = fieldRaw ? fieldRaw.trim() : '';
+    const direction = directionRaw ? directionRaw.trim().toUpperCase() : 'ASC';
+
+    if (!field) {
+      return undefined;
+    }
+
+    const normalizedDirection = ['ASC', 'DESC'].includes(direction) ? direction : 'ASC';
+    return `${field} ${normalizedDirection}`;
+  }
+
+  applyLocalInvoiceFilters(invoices, filters = {}) {
+    if (!Array.isArray(invoices) || invoices.length === 0 || !filters) {
+      return invoices;
+    }
+
+    const {
+      search,
+      minTotal,
+      maxTotal
+    } = filters;
+
+    const hasSearch = typeof search === 'string' && search.length > 0;
+    const hasMin = typeof minTotal === 'number';
+    const hasMax = typeof maxTotal === 'number';
+
+    if (!hasSearch && !hasMin && !hasMax) {
+      return invoices;
+    }
+
+    const normalizedSearch = hasSearch ? search.toLowerCase() : null;
+
+    return invoices.filter((invoice) => {
+      if (hasMin && Number(invoice.Total) < minTotal) {
+        return false;
+      }
+
+      if (hasMax && Number(invoice.Total) > maxTotal) {
+        return false;
+      }
+
+      if (normalizedSearch) {
+        const haystack = [
+          invoice.InvoiceNumber,
+          invoice.Reference,
+          invoice.Type,
+          invoice.Status,
+          invoice.Contact?.Name,
+          invoice.Contact?.EmailAddress
+        ]
+          .map((value) => (value ? String(value).toLowerCase() : ''))
+          .join(' ');
+
+        if (!haystack.includes(normalizedSearch)) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }
+
   /**
    * Fetch data from Xero API with automatic token refresh
    * @param {string} endpoint - API endpoint
@@ -94,6 +352,90 @@ class XeroDataService {
   }
 
   /**
+   * Fetch all pages for a Xero collection endpoint
+   * @param {string} endpoint - API endpoint
+   * @param {string} accessToken - Access token
+   * @param {string} tenantId - Tenant ID
+   * @param {Object} params - Query parameters (without page)
+   * @param {Object} options - Additional options ({ resultKey, pageSize, maxPages, companyId })
+   * @returns {Promise<Object>} Aggregated API response
+   */
+  async fetchAllPages(endpoint, accessToken, tenantId, params = {}, options = {}) {
+    const {
+      companyId,
+      resultKey,
+      pageSize = 100,
+      maxPages = 500,
+      logLabel = endpoint
+    } = options;
+
+    if (!resultKey) {
+      console.warn(`⚠️  fetchAllPages called without resultKey for ${endpoint}. Falling back to single-page fetch.`);
+      return this.fetchFromXero(endpoint, accessToken, tenantId, params, { companyId });
+    }
+
+    const baseParams = { ...params };
+    let currentPage = 1;
+    if (baseParams.page) {
+      const parsedPage = parseInt(baseParams.page, 10);
+      if (!Number.isNaN(parsedPage) && parsedPage > 0) {
+        currentPage = parsedPage;
+      }
+      delete baseParams.page;
+    }
+
+    let aggregatedResponse = null;
+    const combinedItems = [];
+    let pagesFetched = 0;
+
+    while (pagesFetched < maxPages) {
+      const pageParams = { ...baseParams, page: currentPage };
+      if (!pageParams.pageSize) {
+        pageParams.pageSize = pageSize;
+      }
+      const pageData = await this.fetchFromXero(endpoint, accessToken, tenantId, pageParams, { companyId });
+      const items = Array.isArray(pageData?.[resultKey]) ? pageData[resultKey] : [];
+
+      if (!aggregatedResponse) {
+        aggregatedResponse = { ...pageData };
+      }
+
+      const batchCount = items.length;
+      if (batchCount === 0) {
+        console.log(`ℹ️  ${logLabel} returned no data on page ${currentPage}. Stopping pagination.`);
+        break;
+      }
+
+      combinedItems.push(...items);
+      pagesFetched += 1;
+
+      if (batchCount < pageSize) {
+        console.log(`✅ Completed pagination for ${logLabel}. Pages fetched: ${pagesFetched}, total records: ${combinedItems.length}`);
+        break;
+      }
+
+      currentPage += 1;
+
+      if (pagesFetched === maxPages) {
+        console.warn(`⚠️  Reached maxPages (${maxPages}) while fetching ${logLabel}. Results may be truncated.`);
+      }
+    }
+
+    if (!aggregatedResponse) {
+      aggregatedResponse = {};
+    }
+
+    aggregatedResponse[resultKey] = combinedItems;
+    aggregatedResponse.pagination = {
+      pagesFetched,
+      itemCount: combinedItems.length,
+      pageSize
+    };
+
+    return aggregatedResponse;
+  }
+
+  /**
    * Get cached data
    * @param {number} companyId - Company ID
    * @param {string} tenantId - Tenant ID
@@ -164,36 +506,176 @@ class XeroDataService {
    */
   async getInvoices(companyId, tenantId, options = {}) {
     try {
-      const { useCache = true, fromDate, toDate, status } = options;
+      const {
+        useCache = true,
+        fromDate,
+        toDate,
+        status,
+        filters: rawFilters = {},
+        sort,
+        pageSize
+      } = options;
 
-      // Check cache first
-      if (useCache) {
+      const normalizedFilters = this.normalizeInvoiceFilters(rawFilters);
+      const { statuses: filterStatuses = [], ...otherFilters } = normalizedFilters;
+      const statusFilters = this.combineStatusFilters(status, filterStatuses);
+      const orderParam = this.buildOrderParam(sort || otherFilters.sort);
+      delete otherFilters.sort;
+
+      const shouldUseCache = useCache && !this.hasInvoiceFilters({
+        fromDate,
+        toDate,
+        statuses: statusFilters,
+        sort: orderParam,
+        filters: otherFilters
+      });
+
+      // Check cache first (only for unfiltered/default requests)
+      if (shouldUseCache) {
         const cachedData = await this.getCachedData(companyId, tenantId, 'invoices');
         if (cachedData) {
           return cachedData;
         }
       }
 
-      // Get valid access token
       const accessToken = await xeroAuthService.getValidAccessToken(companyId);
 
-      // Build query parameters
       const params = {};
-      if (fromDate) params.date = `>=${fromDate}`;
-      if (toDate) params.date = `${params.date || ''}<=${toDate}`;
-      if (status) params.status = status;
+      const whereClauses = [];
 
-      // Fetch from Xero
-      const data = await this.fetchFromXero(
+      if (fromDate) {
+        const formatted = this.formatDateForXero(fromDate);
+        if (formatted) {
+          whereClauses.push(`Date >= ${formatted}`);
+        }
+      }
+
+      if (toDate) {
+        const formatted = this.formatDateForXero(toDate, true);
+        if (formatted) {
+          whereClauses.push(`Date <= ${formatted}`);
+        }
+      }
+
+      if (otherFilters.dueDateFrom) {
+        const formatted = this.formatDateForXero(otherFilters.dueDateFrom);
+        if (formatted) {
+          whereClauses.push(`DueDate >= ${formatted}`);
+        }
+        delete otherFilters.dueDateFrom;
+      }
+
+      if (otherFilters.dueDateTo) {
+        const formatted = this.formatDateForXero(otherFilters.dueDateTo, true);
+        if (formatted) {
+          whereClauses.push(`DueDate <= ${formatted}`);
+        }
+        delete otherFilters.dueDateTo;
+      }
+
+      if (Array.isArray(statusFilters) && statusFilters.length > 0) {
+        const statusClause = statusFilters
+          .map((code) => `Status=="${this.escapeXeroString(code)}"`)
+          .join(' OR ');
+        whereClauses.push(`(${statusClause})`);
+      }
+
+      if (otherFilters.type) {
+        whereClauses.push(`Type=="${this.escapeXeroString(otherFilters.type)}"`);
+        delete otherFilters.type;
+      }
+
+      if (otherFilters.overdueOnly) {
+        whereClauses.push('IsOverdue==true');
+        delete otherFilters.overdueOnly;
+      }
+
+      if (otherFilters.contactId) {
+        whereClauses.push(`Contact.ContactID==Guid("${this.escapeXeroString(otherFilters.contactId)}")`);
+        delete otherFilters.contactId;
+      }
+
+      if (Array.isArray(otherFilters.contactIds) && otherFilters.contactIds.length > 0) {
+        const contactClause = otherFilters.contactIds
+          .map((id) => `Contact.ContactID==Guid("${this.escapeXeroString(id)}")`)
+          .join(' OR ');
+        whereClauses.push(`(${contactClause})`);
+        delete otherFilters.contactIds;
+      }
+
+      if (otherFilters.contactName) {
+        whereClauses.push(`Contact.Name.Contains("${this.escapeXeroString(otherFilters.contactName)}")`);
+        delete otherFilters.contactName;
+      }
+
+      if (otherFilters.invoiceNumber) {
+        whereClauses.push(`InvoiceNumber=="${this.escapeXeroString(otherFilters.invoiceNumber)}"`);
+        delete otherFilters.invoiceNumber;
+      }
+
+      if (otherFilters.reference) {
+        whereClauses.push(`Reference.Contains("${this.escapeXeroString(otherFilters.reference)}")`);
+        delete otherFilters.reference;
+      }
+
+      if (typeof otherFilters.minTotal === 'number') {
+        whereClauses.push(`Total>=${otherFilters.minTotal}`);
+      }
+
+      if (typeof otherFilters.maxTotal === 'number') {
+        whereClauses.push(`Total<=${otherFilters.maxTotal}`);
+      }
+
+      const localFilterPayload = {
+        search: otherFilters.search,
+        minTotal: otherFilters.minTotal,
+        maxTotal: otherFilters.maxTotal
+      };
+
+      delete otherFilters.search;
+      delete otherFilters.minTotal;
+      delete otherFilters.maxTotal;
+
+      if (whereClauses.length > 0) {
+        params.where = whereClauses.join(' AND ');
+      }
+
+      if (orderParam) {
+        params.order = orderParam;
+      }
+
+      const effectivePageSize = this.resolvePageSize(pageSize);
+
+      const data = await this.fetchAllPages(
         '/api.xro/2.0/Invoices',
         accessToken,
         tenantId,
         params,
-        { companyId }
+        {
+          companyId,
+          resultKey: 'Invoices',
+          logLabel: 'Invoices',
+          pageSize: effectivePageSize
+        }
       );
 
-      // Cache the result
-      await this.cacheData(companyId, tenantId, 'invoices', data, 15); // 15 minutes
+      const invoices = Array.isArray(data?.Invoices) ? data.Invoices : [];
+      const filteredInvoices = this.applyLocalInvoiceFilters(invoices, localFilterPayload);
+
+      if (filteredInvoices !== invoices) {
+        data.Invoices = filteredInvoices;
+      }
+
+      if (!data.pagination) {
+        data.pagination = {};
+      }
+
+      data.pagination.itemCount = filteredInvoices.length;
+      data.pagination.pageSize = effectivePageSize;
+
+      if (shouldUseCache) {
+        await this.cacheData(companyId, tenantId, 'invoices', data, 15); // 15 minutes
+      }
 
       return data;
 
@@ -229,13 +711,17 @@ class XeroDataService {
       const params = {};
       if (!includeArchived) params.includeArchived = 'false';
 
-      // Fetch from Xero
-      const data = await this.fetchFromXero(
+      // Fetch all pages from Xero
+      const data = await this.fetchAllPages(
         '/api.xro/2.0/Contacts',
         accessToken,
         tenantId,
         params,
-        { companyId }
+        {
+          companyId,
+          resultKey: 'Contacts',
+          logLabel: 'Contacts'
+        }
       );
 
       // Cache the result
@@ -343,12 +829,16 @@ class XeroDataService {
         if (fromDate) invoiceParams.where += ` AND Date>="${fromDate}"`;
         if (toDate) invoiceParams.where += ` AND Date<="${toDate}"`;
 
-        invoices = await this.fetchFromXero(
+        invoices = await this.fetchAllPages(
           '/api.xro/2.0/Invoices',
           accessToken,
           tenantId,
           invoiceParams,
-          { companyId }
+          {
+            companyId,
+            resultKey: 'Invoices',
+            logLabel: 'Invoices for BAS data'
+          }
         );
       } catch (error) {
         console.warn('⚠️  Could not fetch Invoices:', error.message);
@@ -477,12 +967,16 @@ class XeroDataService {
         if (fromDate) bankParams.where += ` AND Date>="${fromDate}"`;
         if (toDate) bankParams.where += ` AND Date<="${toDate}"`;
 
-        bankTransactions = await this.fetchFromXero(
+        bankTransactions = await this.fetchAllPages(
           '/api.xro/2.0/BankTransactions',
           accessToken,
           tenantId,
           bankParams,
-          { companyId }
+          {
+            companyId,
+            resultKey: 'BankTransactions',
+            logLabel: 'Bank Transactions for FAS data'
+          }
         );
       } catch (error) {
         console.warn('⚠️  Could not fetch Bank Transactions:', error.message);
@@ -491,12 +985,16 @@ class XeroDataService {
       // 5. Get Accounts (for FBT liability accounts)
       let accounts = null;
       try {
-        accounts = await this.fetchFromXero(
+        accounts = await this.fetchAllPages(
           '/api.xro/2.0/Accounts',
           accessToken,
           tenantId,
           { where: `Type=="LIABILITY" OR Type=="EXPENSE"` },
-          { companyId }
+          {
+            companyId,
+            resultKey: 'Accounts',
+            logLabel: 'Accounts for FAS data'
+          }
         );
       } catch (error) {
         console.warn('⚠️  Could not fetch Accounts:', error.message);
@@ -602,8 +1100,8 @@ class XeroDataService {
       const noRetryOptions = { companyId, retryOnUnauthorized: false };
 
       const [invoices, contacts, financialSummary] = await Promise.allSettled([
-        this.fetchFromXero('/api.xro/2.0/Invoices?page=1', accessToken, tenantId, {}, fetchOptions),
-        this.fetchFromXero('/api.xro/2.0/Contacts?page=1', accessToken, tenantId, {}, noRetryOptions),
+        this.fetchAllPages('/api.xro/2.0/Invoices', accessToken, tenantId, {}, { ...fetchOptions, resultKey: 'Invoices', logLabel: 'Invoices for dashboard' }),
+        this.fetchAllPages('/api.xro/2.0/Contacts', accessToken, tenantId, {}, { ...noRetryOptions, resultKey: 'Contacts', logLabel: 'Contacts for dashboard' }),
         this.fetchFromXero('/api.xro/2.0/Reports/ProfitAndLoss', accessToken, tenantId, {}, noRetryOptions)
       ]);
 

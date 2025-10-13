@@ -130,7 +130,27 @@ class XeroController {
   async getInvoices(req, res) {
     try {
       const companyId = req.company.id;
-      const { tenantId, useCache = 'true', fromDate, toDate, status } = req.query;
+      const {
+        tenantId,
+        useCache = 'true',
+        fromDate,
+        toDate,
+        status,
+        sort,
+        pageSize
+      } = req.query;
+
+      let filters = {};
+      if (req.query.filters) {
+        try {
+          filters = typeof req.query.filters === 'string'
+            ? JSON.parse(req.query.filters)
+            : req.query.filters;
+        } catch (parseError) {
+          console.warn('⚠️  Invalid filters payload for invoices. Falling back to empty filters.', parseError);
+          filters = {};
+        }
+      }
 
       console.log(`📄 Getting invoices for company ${companyId}, tenant ${tenantId}`);
 
@@ -142,7 +162,10 @@ class XeroController {
         useCache: useCache === 'true',
         fromDate,
         toDate,
-        status
+        status,
+        filters,
+        sort,
+        pageSize: pageSize ? parseInt(pageSize, 10) : undefined
       });
 
       res.json({

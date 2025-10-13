@@ -333,6 +333,8 @@ class MissingAttachmentService {
     const pageSize = 100; // Xero's maximum page size
     let hasMoreData = true;
     const maxRetries = 1; // Allow one retry for 401 errors
+    const MAX_PAGES = 500;
+    const seenPageSignatures = new Set();
 
     try {
       while (hasMoreData) {
@@ -356,6 +358,16 @@ class MissingAttachmentService {
           });
 
           const data = response.data[endpoint] || [];
+
+          const pageSignature = JSON.stringify(data.slice(0, 5));
+          if (data.length > 0 && seenPageSignatures.has(pageSignature)) {
+            console.warn(
+              `⚠️ Detected duplicate page while fetching ${endpoint} for company ${companyId} (page ${page}). Stopping pagination to avoid infinite loop.`,
+            );
+            break;
+          }
+
+          seenPageSignatures.add(pageSignature);
           allData.push(...data);
 
           console.log(`✅ [Company ${companyId}] Successfully fetched ${data.length} ${endpoint} records from Xero API (page ${page})`);
@@ -365,8 +377,8 @@ class MissingAttachmentService {
           page++;
 
           // Safety check to prevent infinite loops
-          if (page > 50) {
-            console.warn(`⚠️ Reached maximum page limit (50) for ${endpoint}`);
+          if (page > MAX_PAGES) {
+            console.warn(`⚠️ Reached maximum page limit (${MAX_PAGES}) for ${endpoint}. Some records may not have been retrieved.`);
             break;
           }
 
