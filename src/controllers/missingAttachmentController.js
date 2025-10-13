@@ -320,15 +320,16 @@ const detectMissingAttachments = async (req, res) => {
 const processMissingAttachments = async (req, res) => {
   try {
     const companyId = req.company.id;
+    const tenantId = req.body?.tenantId || req.query?.tenantId || null;
+
+    console.log(`🔄 Processing missing attachments for company ${companyId}${tenantId ? ` (tenant ${tenantId})` : ''}`);
     
-    console.log(`🔄 Processing missing attachments for company ${companyId}`);
-    
-    const results = await missingAttachmentService.processMissingAttachments(companyId);
+    const results = await missingAttachmentService.processMissingAttachments(companyId, tenantId);
     
     res.json({
       success: true,
       data: results,
-      message: `Processed ${results.totalTransactions} transactions, sent ${results.smssSent} SMS notifications`
+      message: `Processed ${results.totalTransactions} transactions, sent ${results.notifications?.totalNotifications ?? results.smssSent} notifications`
     });
   } catch (error) {
     console.error('❌ Error processing missing attachments:', error);

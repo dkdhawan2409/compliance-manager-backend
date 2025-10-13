@@ -714,7 +714,7 @@ Reply STOP to opt out.`;
    * @param {string} companyId - Company ID
    * @returns {Promise<Object>} Processing results
    */
-  async processMissingAttachments(companyId) {
+  async processMissingAttachments(companyId, tenantId = null) {
     try {
       console.log(`🔄 Processing missing attachments for company ${companyId}`);
       
@@ -724,26 +724,28 @@ Reply STOP to opt out.`;
       }
 
       const numericCompanyId = Number(companyId);
-      let tenantId = null;
+      let resolvedTenantId = tenantId;
 
       try {
-        tenantId = await xeroAuthService.validateTenantAccess(numericCompanyId, null);
-        console.log(`✅ Using tenant ${tenantId} for company ${companyId}`);
+        resolvedTenantId = await xeroAuthService.validateTenantAccess(numericCompanyId, tenantId);
+        console.log(`✅ Using tenant ${resolvedTenantId} for company ${companyId}`);
       } catch (tenantError) {
         console.warn(`⚠️ Unable to get tenant from unified auth for company ${companyId}:`, tenantError.message);
 
-        const legacyTenantResult = await db.query(
-          'SELECT tenant_id FROM xero_settings WHERE company_id = $1 AND tenant_id IS NOT NULL LIMIT 1',
-          [companyId]
-        );
+        if (!resolvedTenantId) {
+          const legacyTenantResult = await db.query(
+            'SELECT tenant_id FROM xero_settings WHERE company_id = $1 AND tenant_id IS NOT NULL LIMIT 1',
+            [companyId]
+          );
 
-        if (legacyTenantResult.rows.length > 0) {
-          tenantId = legacyTenantResult.rows[0].tenant_id;
-          console.log(`📦 Falling back to legacy tenant ${tenantId} for company ${companyId}`);
+          if (legacyTenantResult.rows.length > 0) {
+            resolvedTenantId = legacyTenantResult.rows[0].tenant_id;
+            console.log(`📦 Falling back to legacy tenant ${resolvedTenantId} for company ${companyId}`);
+          }
         }
       }
 
-      const missingAttachments = await this.detectMissingAttachments(companyId, tenantId);
+      const missingAttachments = await this.detectMissingAttachments(companyId, resolvedTenantId);
       
       const results = {
         companyId,
@@ -768,7 +770,7 @@ Reply STOP to opt out.`;
           // Check if upload link already exists for this transaction
           const transactionId = transaction.InvoiceID || transaction.BankTransactionID || transaction.ReceiptID || transaction.PurchaseOrderID;
           
-          const transactionTenantId = transaction.tenantId || tenantId;
+          const transactionTenantId = transaction.tenantId || resolvedTenantId;
           let uploadLink = await this.findOrCreateUploadLink(transactionId, companyId, transactionTenantId, transaction.type);
 
           // Get company's missing attachment config
@@ -831,6 +833,11 @@ Reply STOP to opt out.`;
         try {
           const notificationResult = await this.sendMissingAttachmentNotifications(companyId, missingAttachments, company.name);
           results.notifications = notificationResult;
+          const smsCount = notificationResult?.sms?.success ? 1 : 0;
+          const emailCount = notificationResult?.email?.success ? 1 : 0;
+          const totalNotifications = smsCount + emailCount;
+          results.notifications.totalNotifications = totalNotifications;
+          results.smssSent += totalNotifications;
         } catch (notificationError) {
           console.error('❌ Error sending notifications:', notificationError);
           results.errors.push({
