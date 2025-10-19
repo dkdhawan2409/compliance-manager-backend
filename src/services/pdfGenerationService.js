@@ -28,57 +28,51 @@ class PDFGenerationService {
     const summary = this.calculateBASSummary(basData);
     this.addExecutiveSummary(doc, summary, 'BAS');
     
-    // PAGE 2: GST Report Detailed Breakdown
-    doc.addPage();
-    this.addDetailedHeader(doc, 'GST Analysis & Breakdown');
-    
-    if (basData.gstReport) {
+    // PAGE 2: GST Report Detailed Breakdown (only if data exists)
+    if (basData.gstReport && this.hasContent(basData.gstReport)) {
+      doc.addPage();
+      this.addDetailedHeader(doc, 'GST Analysis & Breakdown');
       this.addGSTDetailedSection(doc, basData.gstReport, summary);
-    } else {
-      doc.fontSize(10).fillColor('#666666');
-      doc.text('No GST report data available for this period.', 50);
     }
     
-    // PAGE 3: Sales Analysis
-    doc.addPage();
-    this.addDetailedHeader(doc, 'Sales & Revenue Analysis');
-    
-    if (basData.invoices?.Invoices) {
-      const salesInvoices = basData.invoices.Invoices.filter(inv => inv.Type === 'ACCREC');
+    // PAGE 3: Sales Analysis (only if sales invoices exist)
+    const salesInvoices = basData.invoices?.Invoices?.filter(inv => inv.Type === 'ACCREC') || [];
+    if (salesInvoices.length > 0) {
+      doc.addPage();
+      this.addDetailedHeader(doc, 'Sales & Revenue Analysis');
       this.addSalesAnalysis(doc, salesInvoices);
     }
     
-    // PAGE 4: Purchase Analysis
-    doc.addPage();
-    this.addDetailedHeader(doc, 'Purchase & Expense Analysis');
-    
-    if (basData.invoices?.Invoices) {
-      const purchaseInvoices = basData.invoices.Invoices.filter(inv => inv.Type === 'ACCPAY');
+    // PAGE 4: Purchase Analysis (only if purchase invoices exist)
+    const purchaseInvoices = basData.invoices?.Invoices?.filter(inv => inv.Type === 'ACCPAY') || [];
+    if (purchaseInvoices.length > 0) {
+      doc.addPage();
+      this.addDetailedHeader(doc, 'Purchase & Expense Analysis');
       this.addPurchaseAnalysis(doc, purchaseInvoices);
     }
     
-    // PAGE 5: Profit & Loss Statement
-    if (basData.profitLoss) {
+    // PAGE 5: Profit & Loss Statement (only if data exists)
+    if (basData.profitLoss && this.hasContent(basData.profitLoss)) {
       doc.addPage();
       this.addDetailedHeader(doc, 'Profit & Loss Statement');
       this.addProfitLossDetailed(doc, basData.profitLoss);
     }
     
-    // PAGE 6: Balance Sheet (if available)
-    if (basData.balanceSheet) {
+    // PAGE 6: Balance Sheet (only if data exists)
+    if (basData.balanceSheet && this.hasContent(basData.balanceSheet)) {
       doc.addPage();
       this.addDetailedHeader(doc, 'Balance Sheet Summary');
       this.addBalanceSheetDetailed(doc, basData.balanceSheet);
     }
     
-    // PAGE 7: Invoices Detailed List
+    // PAGE 7: Invoices Detailed List (only if invoices exist)
     if (basData.invoices?.Invoices && basData.invoices.Invoices.length > 0) {
       doc.addPage();
       this.addDetailedHeader(doc, 'Invoice Register');
       this.addDetailedInvoiceList(doc, basData.invoices.Invoices);
     }
     
-    // PAGE 8: Compliance Notes & Recommendations
+    // PAGE 8: Compliance Notes & Recommendations (always include)
     doc.addPage();
     this.addComplianceNotes(doc, summary, 'BAS');
     
@@ -115,52 +109,56 @@ class PDFGenerationService {
     const summary = this.calculateFASSummary(fasData);
     this.addExecutiveSummary(doc, summary, 'FAS');
     
-    // PAGE 2: FBT Detailed Breakdown
-    doc.addPage();
-    this.addDetailedHeader(doc, 'Fringe Benefits Tax Analysis');
-    
-    if (fasData.fasReport) {
-      this.addFBTDetailedSection(doc, fasData.fasReport, summary);
-    } else if (fasData.fbtSummary) {
-      this.addFBTSummarySection(doc, fasData.fbtSummary);
+    // PAGE 2: FBT Detailed Breakdown (only if data exists)
+    if ((fasData.fasReport && this.hasContent(fasData.fasReport)) || fasData.fbtSummary) {
+      doc.addPage();
+      this.addDetailedHeader(doc, 'Fringe Benefits Tax Analysis');
+      
+      if (fasData.fasReport) {
+        this.addFBTDetailedSection(doc, fasData.fasReport, summary);
+      } else if (fasData.fbtSummary) {
+        this.addFBTSummarySection(doc, fasData.fbtSummary);
+      }
     }
     
-    // PAGE 3: FBT Categories Breakdown
+    // PAGE 3: FBT Categories Breakdown (always include - educational)
     doc.addPage();
     this.addDetailedHeader(doc, 'FBT Categories & Benefits Analysis');
     this.addFBTCategoriesBreakdown(doc, fasData);
     
-    // PAGE 4: Employee Benefits Analysis
+    // PAGE 4: Employee Benefits Analysis (always include - shows structure)
     doc.addPage();
     this.addDetailedHeader(doc, 'Employee Benefits Summary');
     this.addEmployeeBenefitsAnalysis(doc, fasData);
     
-    // PAGE 5: Profit & Loss Context
-    if (fasData.profitLoss) {
+    // PAGE 5: Profit & Loss Context (only if data exists)
+    if (fasData.profitLoss && this.hasContent(fasData.profitLoss)) {
       doc.addPage();
       this.addDetailedHeader(doc, 'Profit & Loss Statement');
       this.addProfitLossDetailed(doc, fasData.profitLoss);
     }
     
-    // PAGE 6: Balance Sheet
-    if (fasData.balanceSheet) {
+    // PAGE 6: Balance Sheet (only if data exists)
+    if (fasData.balanceSheet && this.hasContent(fasData.balanceSheet)) {
       doc.addPage();
       this.addDetailedHeader(doc, 'Balance Sheet Summary');
       this.addBalanceSheetDetailed(doc, fasData.balanceSheet);
     }
     
-    // PAGE 7: Transactions Detail
-    if (fasData.transactions || fasData.bankTransactions) {
+    // PAGE 7: Transactions Detail (only if data exists)
+    const hasTransactions = (fasData.transactions?.Transactions && fasData.transactions.Transactions.length > 0) ||
+                           (fasData.bankTransactions?.BankTransactions && fasData.bankTransactions.BankTransactions.length > 0);
+    if (hasTransactions) {
       doc.addPage();
       this.addDetailedHeader(doc, 'Transaction Details');
       this.addTransactionsSummary(doc, fasData.transactions || fasData.bankTransactions);
     }
     
-    // PAGE 8: FBT Calculation Worksheet
+    // PAGE 8: FBT Calculation Worksheet (always include - shows methodology)
     doc.addPage();
     this.addFBTCalculationWorksheet(doc, summary);
     
-    // PAGE 9: Compliance Notes & Recommendations
+    // PAGE 9: Compliance Notes & Recommendations (always include)
     doc.addPage();
     this.addComplianceNotes(doc, summary, 'FAS');
     
@@ -566,10 +564,9 @@ class PDFGenerationService {
    * Add sales analysis
    */
   addSalesAnalysis(doc, salesInvoices) {
+    // This method should only be called if salesInvoices exist (checked before page creation)
     if (!salesInvoices || salesInvoices.length === 0) {
-      doc.fontSize(10).fillColor('#666666');
-      doc.text('No sales invoices found for this period.', 50, 100);
-      return;
+      return; // Should not happen, but safeguard
     }
 
     // Statistics
@@ -632,10 +629,9 @@ class PDFGenerationService {
    * Add purchase analysis
    */
   addPurchaseAnalysis(doc, purchaseInvoices) {
+    // This method should only be called if purchaseInvoices exist (checked before page creation)
     if (!purchaseInvoices || purchaseInvoices.length === 0) {
-      doc.fontSize(10).fillColor('#666666');
-      doc.text('No purchase invoices found for this period.', 50, 100);
-      return;
+      return; // Should not happen, but safeguard
     }
 
     // Statistics
@@ -684,11 +680,9 @@ class PDFGenerationService {
    * Add profit & loss detailed
    */
   addProfitLossDetailed(doc, profitLoss) {
-    if (profitLoss.Reports && profitLoss.Reports[0]) {
-      this.processReportRows(doc, profitLoss.Reports[0].Rows || []);
-    } else {
-      doc.fontSize(10).fillColor('#666666');
-      doc.text('No profit & loss data available.', 50, 100);
+    // This method should only be called if data exists (checked before page creation)
+    if (profitLoss.Reports && profitLoss.Reports[0] && profitLoss.Reports[0].Rows) {
+      this.processReportRows(doc, profitLoss.Reports[0].Rows);
     }
   }
 
@@ -696,11 +690,9 @@ class PDFGenerationService {
    * Add balance sheet detailed
    */
   addBalanceSheetDetailed(doc, balanceSheet) {
-    if (balanceSheet.Reports && balanceSheet.Reports[0]) {
-      this.processReportRows(doc, balanceSheet.Reports[0].Rows || []);
-    } else {
-      doc.fontSize(10).fillColor('#666666');
-      doc.text('No balance sheet data available.', 50, 100);
+    // This method should only be called if data exists (checked before page creation)
+    if (balanceSheet.Reports && balanceSheet.Reports[0] && balanceSheet.Reports[0].Rows) {
+      this.processReportRows(doc, balanceSheet.Reports[0].Rows);
     }
   }
 
@@ -933,10 +925,9 @@ class PDFGenerationService {
    * Add transactions summary
    */
   addTransactionsSummary(doc, transactions) {
+    // This method should only be called if transactions exist (checked before page creation)
     if (!transactions || !transactions.Transactions || transactions.Transactions.length === 0) {
-      doc.fontSize(10).fillColor('#666666');
-      doc.text('No transaction data available.', 50, 100);
-      return;
+      return; // Should not happen, but safeguard
     }
     
     const trans = transactions.Transactions.slice(0, 30);
@@ -1047,6 +1038,32 @@ class PDFGenerationService {
   formatCurrency(value) {
     const num = parseFloat(value) || 0;
     return `$${num.toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+
+  /**
+   * Check if data has meaningful content
+   */
+  hasContent(data) {
+    if (!data) return false;
+    
+    // Check if it has Reports array with content
+    if (data.Reports && Array.isArray(data.Reports)) {
+      return data.Reports.some(report => 
+        report.Rows && Array.isArray(report.Rows) && report.Rows.length > 0
+      );
+    }
+    
+    // Check if it has Rows directly
+    if (data.Rows && Array.isArray(data.Rows)) {
+      return data.Rows.length > 0;
+    }
+    
+    // Check if it's an object with properties
+    if (typeof data === 'object' && data !== null) {
+      return Object.keys(data).length > 0;
+    }
+    
+    return false;
   }
 }
 
