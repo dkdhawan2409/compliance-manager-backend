@@ -15,9 +15,13 @@ class PDFGenerationService {
   generateBASReport(basData, options = {}) {
     const { companyName = 'Unknown Company', fromDate, toDate, quarter } = options;
     
-    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    const doc = new PDFDocument({ 
+      size: 'A4', 
+      margin: 50,
+      bufferPages: true // Enable page buffering for footer
+    });
     
-    // Header
+    // Header on first page
     this.addHeader(doc, 'Business Activity Statement (BAS)', companyName);
     
     // Period Information
@@ -48,11 +52,11 @@ class PDFGenerationService {
       this.addInvoicesSummary(doc, basData.invoices.Invoices, 'BAS Period Invoices');
     }
     
-    // Footer on each page
-    const pages = doc.bufferedPageRange();
-    for (let i = 0; i < pages.count; i++) {
+    // Add footer to all buffered pages
+    const range = doc.bufferedPageRange();
+    for (let i = 0; i < range.count; i++) {
       doc.switchToPage(i);
-      this.addFooter(doc, i + 1, pages.count);
+      this.addFooter(doc, i + 1, range.count);
     }
     
     doc.end();
@@ -68,7 +72,11 @@ class PDFGenerationService {
   generateFASReport(fasData, options = {}) {
     const { companyName = 'Unknown Company', fromDate, toDate, quarter } = options;
     
-    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    const doc = new PDFDocument({ 
+      size: 'A4', 
+      margin: 50,
+      bufferPages: true // Enable page buffering for footer
+    });
     
     // Header
     this.addHeader(doc, 'Fringe Benefits Tax Activity Statement (FAS)', companyName);
@@ -102,11 +110,11 @@ class PDFGenerationService {
       this.addSection(doc, 'Profit & Loss Summary', fasData.profitLoss);
     }
     
-    // Footer on each page
-    const pages = doc.bufferedPageRange();
-    for (let i = 0; i < pages.count; i++) {
+    // Add footer to all buffered pages
+    const range = doc.bufferedPageRange();
+    for (let i = 0; i < range.count; i++) {
       doc.switchToPage(i);
-      this.addFooter(doc, i + 1, pages.count);
+      this.addFooter(doc, i + 1, range.count);
     }
     
     doc.end();
