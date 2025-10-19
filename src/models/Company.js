@@ -65,21 +65,21 @@ class Company {
 
   // Update company profile
   static async updateProfile(id, profileData, includeInactive = false) {
-    const { name, companyName, email, mobileNumber, countryCode } = profileData;
+    const { name, companyName, email, mobileNumber, countryCode, accountantEmail } = profileData;
     
     // Use name if provided, otherwise use companyName
     const finalCompanyName = name || companyName;
     
     const query = includeInactive
       ? `UPDATE companies 
-           SET company_name = $1, email = $2, mobile_number = $3, country_code = $4
-           WHERE id = $5
+           SET company_name = $1, email = $2, mobile_number = $3, country_code = $4, accountant_email = $5
+           WHERE id = $6
            RETURNING *`
       : `UPDATE companies 
-           SET company_name = $1, email = $2, mobile_number = $3, country_code = $4
-           WHERE id = $5 AND is_active = TRUE
+           SET company_name = $1, email = $2, mobile_number = $3, country_code = $4, accountant_email = $5
+           WHERE id = $6 AND is_active = TRUE
            RETURNING *`;
-    const result = await db.query(query, [finalCompanyName, email, mobileNumber, countryCode || '+61', id]);
+    const result = await db.query(query, [finalCompanyName, email, mobileNumber, countryCode || '+61', accountantEmail, id]);
     if (result.rows.length === 0) {
       return null;
     }

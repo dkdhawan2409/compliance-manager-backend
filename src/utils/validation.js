@@ -118,6 +118,14 @@ const profileUpdateSchema = Joi.object({
     .messages({
       'string.pattern.base': 'Please provide a valid country code (e.g., +61, +1, +44)',
       'string.base': 'Country code must be a string'
+    }),
+  
+  accountantEmail: Joi.string()
+    .email()
+    .allow('', null)
+    .optional()
+    .messages({
+      'string.email': 'Please provide a valid accountant email address'
     })
 });
 
