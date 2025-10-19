@@ -18,7 +18,9 @@ router.get('/tenants', xeroController.getTenants);
 router.get('/invoices', xeroController.getInvoices);
 router.get('/contacts', xeroController.getContacts);
 router.get('/bas-data', xeroController.getBASData);
+router.get('/bas-data/pdf', xeroController.generateBASPDF);
 router.get('/fas-data', xeroController.getFASData);
+router.get('/fas-data/pdf', xeroController.generateFASPDF);
 router.get('/financial-summary', xeroController.getFinancialSummary);
 router.get('/dashboard', xeroController.getDashboardData);
 

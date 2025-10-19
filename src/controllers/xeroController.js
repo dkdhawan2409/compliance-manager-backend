@@ -1,5 +1,6 @@
 const xeroAuthService = require('../services/xeroAuthService');
 const xeroDataService = require('../services/xeroDataService');
+const pdfGenerationService = require('../services/pdfGenerationService');
 
 /**
  * Xero Controller - Unified API endpoints for Xero integration
@@ -508,6 +509,110 @@ class XeroController {
         message: error.message || 'Failed to disconnect from Xero',
         error: process.env.NODE_ENV === 'development' ? error.stack : undefined
       });
+    }
+  }
+
+  /**
+   * Generate BAS Report PDF
+   * GET /api/xero/bas-data/pdf
+   */
+  async generateBASPDF(req, res) {
+    try {
+      const companyId = req.company.id;
+      const companyName = req.company.companyName || req.company.name || 'Company';
+      const { tenantId, fromDate, toDate, quarter } = req.query;
+
+      console.log(`📄 Generating BAS PDF for company ${companyId}, tenant ${tenantId}`);
+
+      // Validate tenant access
+      const validatedTenantId = await xeroDataService.validateTenantAccess(companyId, tenantId);
+
+      // Get BAS data
+      const basData = await xeroDataService.getBASData(companyId, validatedTenantId, {
+        useCache: true,
+        fromDate,
+        toDate
+      });
+
+      // Generate PDF
+      const pdfDoc = pdfGenerationService.generateBASReport(basData, {
+        companyName,
+        fromDate: fromDate || 'N/A',
+        toDate: toDate || 'N/A',
+        quarter: quarter || ''
+      });
+
+      // Set response headers for PDF download
+      const filename = `BAS_Report_${companyName.replace(/[^a-z0-9]/gi, '_')}_${fromDate || 'current'}_to_${toDate || 'current'}.pdf`;
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+      // Pipe PDF to response
+      pdfDoc.pipe(res);
+
+    } catch (error) {
+      console.error('❌ Error generating BAS PDF:', error);
+      
+      // If PDF generation failed, send JSON error response
+      if (!res.headersSent) {
+        res.status(500).json({
+          success: false,
+          message: error.message || 'Failed to generate BAS PDF',
+          error: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
+      }
+    }
+  }
+
+  /**
+   * Generate FAS Report PDF
+   * GET /api/xero/fas-data/pdf
+   */
+  async generateFASPDF(req, res) {
+    try {
+      const companyId = req.company.id;
+      const companyName = req.company.companyName || req.company.name || 'Company';
+      const { tenantId, fromDate, toDate, quarter } = req.query;
+
+      console.log(`📄 Generating FAS PDF for company ${companyId}, tenant ${tenantId}`);
+
+      // Validate tenant access
+      const validatedTenantId = await xeroDataService.validateTenantAccess(companyId, tenantId);
+
+      // Get FAS data
+      const fasData = await xeroDataService.getFASData(companyId, validatedTenantId, {
+        useCache: true,
+        fromDate,
+        toDate
+      });
+
+      // Generate PDF
+      const pdfDoc = pdfGenerationService.generateFASReport(fasData, {
+        companyName,
+        fromDate: fromDate || 'N/A',
+        toDate: toDate || 'N/A',
+        quarter: quarter || ''
+      });
+
+      // Set response headers for PDF download
+      const filename = `FAS_Report_${companyName.replace(/[^a-z0-9]/gi, '_')}_${fromDate || 'current'}_to_${toDate || 'current'}.pdf`;
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+      // Pipe PDF to response
+      pdfDoc.pipe(res);
+
+    } catch (error) {
+      console.error('❌ Error generating FAS PDF:', error);
+      
+      // If PDF generation failed, send JSON error response
+      if (!res.headersSent) {
+        res.status(500).json({
+          success: false,
+          message: error.message || 'Failed to generate FAS PDF',
+          error: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
+      }
     }
   }
 }
