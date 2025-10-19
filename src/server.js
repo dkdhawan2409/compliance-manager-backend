@@ -13,6 +13,7 @@ const cronjobSettingRoutes = require('./routes/cronjobSettingRoutes');
 const complianceDeadlinesRoutes = require('./routes/complianceDeadlinesRoutes');
 const openaiRoutes = require('./routes/openaiRoutes');
 const openaiSettingRoutes = require('./routes/openaiSettingRoutes');
+const reportRoutes = require('./routes/reportRoutes');
 const xeroRoutes = require('./routes/xeroRoutes');
 const cleanXeroRoutes = require('./routes/cleanXeroRoutes');
 const simpleXeroRoutes = require('./routes/simpleXeroRoutes');
@@ -185,6 +186,7 @@ app.use('/api/cronjob-settings', cronjobSettingRoutes);
 app.use('/api/compliance-deadlines', complianceDeadlinesRoutes);
 app.use('/api/openai', openaiRoutes);
 app.use('/api/openai-admin', openaiSettingRoutes);
+app.use('/api/reports', reportRoutes);
 // Unified Xero routes (main)
 app.use('/api/xero', xeroRoutes);
 // Plug-and-play Xero integration routes
