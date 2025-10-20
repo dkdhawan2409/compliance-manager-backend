@@ -419,7 +419,7 @@ class PDFGenerationService {
     let totalSales = 0;
     let totalPurchases = 0;
     let gstOnSales = 0;
-    gstOnPurchases = 0;
+    let gstOnPurchases = 0;
     let invoiceCount = 0;
     let salesInvoiceCount = 0;
     let purchaseInvoiceCount = 0;
